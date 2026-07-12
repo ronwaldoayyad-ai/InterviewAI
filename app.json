@@ -19,6 +19,21 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "expo-font",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "InterviewAI records your answers so the AI can transcribe and coach you."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "InterviewAI uses your camera for the pre-session setup check."
+        }
+      ]
+    ]
   }
 }
