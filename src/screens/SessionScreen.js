@@ -1,14 +1,18 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import * as Speech from 'expo-speech';
 import { AudioModule, RecordingPresets, useAudioRecorder } from 'expo-audio';
 import { Card, StepProgress } from '../components/ui';
 import Waveform from '../components/Waveform';
-import { analyzeAnswer, summarizeSession } from '../data/mockAI';
+import { analyzeAnswer, nextQuestion, summarizeSession } from '../data/mockAI';
+import { persistRecording } from '../services/storage';
 import { useApp } from '../state/AppContext';
 import { colors, fonts, radii, shadow, spacing, type } from '../theme';
+
+const COUNTDOWN_SECONDS = 5;
 
 function formatTime(sec) {
   const m = Math.floor(sec / 60);
@@ -16,28 +20,99 @@ function formatTime(sec) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-// Real-time interview session: question → record answer → next (TDD §4.3)
+// Real-time interview session (TDD §4.3).
+// Flow per question: TTS readback → 5s countdown → mic auto-starts → tap stop.
 export default function SessionScreen({ navigation, route }) {
   const { session } = route.params;
+  const unlimited = session.questionLimit === 'unlimited';
   const { addSession } = useApp();
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
 
+  const [questions, setQuestions] = useState(session.questions);
   const [index, setIndex] = useState(0);
-  const [phase, setPhase] = useState('ready'); // ready | recording | processing
+  const [phase, setPhase] = useState('reading'); // reading | countdown | recording | processing
+  const [countdown, setCountdown] = useState(COUNTDOWN_SECONDS);
   const [elapsed, setElapsed] = useState(0);
+  const [muted, setMuted] = useState(false);
   const answersRef = useRef([]);
   const timerRef = useRef(null);
+  const countdownRef = useRef(null);
+  const finishingRef = useRef(false);
+  const phaseRef = useRef('reading');
+  phaseRef.current = phase;
 
-  const question = session.questions[index];
-  const isLast = index === session.questions.length - 1;
+  const question = questions[index];
+  const isLast = !unlimited && index === questions.length - 1;
 
-  useEffect(() => () => clearInterval(timerRef.current), []);
+  // Question readback via TTS, then hand off to the countdown (enhancement #3)
+  useEffect(() => {
+    setPhase('reading');
+    setMuted(false);
+    setElapsed(0);
+    let cancelled = false;
+    const advance = () => {
+      if (!cancelled && phaseRef.current === 'reading') beginCountdown();
+    };
+    const canSpeak = Platform.OS !== 'web' || (typeof window !== 'undefined' && window.speechSynthesis);
+    if (canSpeak) {
+      try {
+        Speech.speak(question.questionText, {
+          rate: 0.95,
+          onDone: advance,
+          onError: advance,
+          onStopped: () => {},
+        });
+      } catch {
+        advance();
+      }
+    } else {
+      setTimeout(advance, 1200);
+    }
+    // Safety net in case TTS callbacks never fire (some web/emulator engines)
+    const fallback = setTimeout(advance, 4000 + question.questionText.length * 80);
+    return () => {
+      cancelled = true;
+      clearTimeout(fallback);
+      Speech.stop();
+    };
+  }, [index]);
+
+  useEffect(
+    () => () => {
+      clearInterval(timerRef.current);
+      clearInterval(countdownRef.current);
+      Speech.stop();
+    },
+    []
+  );
+
+  const beginCountdown = () => {
+    Speech.stop();
+    setPhase('countdown');
+    setCountdown(COUNTDOWN_SECONDS);
+    clearInterval(countdownRef.current);
+    countdownRef.current = setInterval(() => {
+      setCountdown((c) => {
+        if (c <= 1) {
+          clearInterval(countdownRef.current);
+          startRecording();
+          return 0;
+        }
+        return c - 1;
+      });
+    }, 1000);
+  };
 
   const startRecording = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
       const perm = await AudioModule.getRecordingPermissionsAsync();
       if (perm.granted) {
+        if (session.micInputUid) {
+          try {
+            await recorder.setInput(session.micInputUid);
+          } catch {}
+        }
         await recorder.prepareToRecordAsync();
         recorder.record();
       }
@@ -45,11 +120,46 @@ export default function SessionScreen({ navigation, route }) {
       // Recording unavailable (e.g. web preview) — session still works with mock analysis
     }
     setElapsed(0);
+    setMuted(false);
     setPhase('recording');
+    clearInterval(timerRef.current);
     timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
   };
 
-  const stopRecording = async () => {
+  // Mute pauses the recorder + timer so muted time never counts against pacing
+  const toggleMute = () => {
+    Haptics.selectionAsync();
+    setMuted((m) => {
+      const next = !m;
+      try {
+        if (next) {
+          recorder.pause();
+          clearInterval(timerRef.current);
+        } else {
+          recorder.record();
+          timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
+        }
+      } catch {}
+      return next;
+    });
+  };
+
+  const finalizeSession = () => {
+    const answers = answersRef.current;
+    const completed = {
+      id: `s_${Date.now()}`,
+      title: session.title,
+      sessionType: session.sessionType,
+      contextSource: session.contextSource,
+      completedAt: new Date().toISOString(),
+      answers,
+      summary: summarizeSession(answers),
+    };
+    addSession(completed);
+    navigation.replace('SessionSummary', { sessionId: completed.id, celebrate: true });
+  };
+
+  const stopRecording = async (finishAfter = false) => {
     clearInterval(timerRef.current);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setPhase('processing');
@@ -60,35 +170,51 @@ export default function SessionScreen({ navigation, route }) {
     } catch {
       // ignore — mock analysis continues without audio
     }
+    if (uri) {
+      uri = await persistRecording(uri, `${Date.now()}_q${index + 1}.m4a`);
+    }
 
+    const answeredQuestion = question;
+    const answeredElapsed = elapsed;
     // Simulates upload → Whisper STT → LLM critique
     setTimeout(() => {
       answersRef.current.push({
-        question,
+        question: answeredQuestion,
         audioUri: uri,
-        durationSec: elapsed,
-        analysis: analyzeAnswer({ question, durationSec: elapsed }),
+        durationSec: answeredElapsed,
+        analysis: analyzeAnswer({ question: answeredQuestion, durationSec: answeredElapsed }),
       });
 
-      if (isLast) {
-        const answers = answersRef.current;
-        const completed = {
-          id: `s_${Date.now()}`,
-          title: session.title,
-          sessionType: session.sessionType,
-          contextSource: session.contextSource,
-          completedAt: new Date().toISOString(),
-          answers,
-          summary: summarizeSession(answers),
-        };
-        addSession(completed);
-        navigation.replace('SessionSummary', { sessionId: completed.id, celebrate: true });
+      if (finishAfter || isLast) {
+        finalizeSession();
       } else {
+        if (unlimited && index + 1 >= questions.length) {
+          setQuestions((qs) => [
+            ...qs,
+            nextQuestion({ sessionType: session.sessionType, contextText: session.contextText }),
+          ]);
+        }
         setIndex((i) => i + 1);
-        setElapsed(0);
-        setPhase('ready');
       }
     }, 1400);
+  };
+
+  // "End interview" for unlimited sessions (and early exit for finite ones)
+  const endInterview = () => {
+    if (finishingRef.current) return;
+    if (phase === 'recording') {
+      finishingRef.current = true;
+      stopRecording(true);
+      return;
+    }
+    Speech.stop();
+    clearInterval(countdownRef.current);
+    if (answersRef.current.length > 0) {
+      finishingRef.current = true;
+      finalizeSession();
+    } else {
+      navigation.goBack();
+    }
   };
 
   return (
@@ -98,34 +224,69 @@ export default function SessionScreen({ navigation, route }) {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="End session"
-            onPress={() => navigation.goBack()}
+            onPress={endInterview}
             hitSlop={12}
           >
             <Ionicons name="close" size={26} color={colors.textSecondary} />
           </Pressable>
           <Text style={type.caption}>
-            Question {index + 1} of {session.questions.length}
+            {unlimited ? `Question ${index + 1} · Unlimited` : `Question ${index + 1} of ${questions.length}`}
           </Text>
           <View style={{ width: 26 }} />
         </View>
-        <StepProgress step={index + 1} total={session.questions.length} />
+        {!unlimited && <StepProgress step={index + 1} total={questions.length} />}
 
         <Card style={styles.questionCard}>
-          <View style={styles.focusPill}>
-            <Ionicons name="locate-outline" size={13} color={colors.primary} />
-            <Text style={styles.focusText}>{question.expectedFocus}</Text>
+          <View style={styles.focusRow}>
+            <View style={styles.focusPill}>
+              <Ionicons name="locate-outline" size={13} color={colors.primary} />
+              <Text style={styles.focusText}>{question.expectedFocus}</Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Read question again"
+              hitSlop={8}
+              onPress={() => {
+                if (phase === 'recording' || phase === 'processing') return;
+                Speech.stop();
+                clearInterval(countdownRef.current);
+                setPhase('reading');
+                Speech.speak(question.questionText, {
+                  rate: 0.95,
+                  onDone: beginCountdown,
+                  onError: beginCountdown,
+                });
+              }}
+            >
+              <Ionicons name="volume-high-outline" size={20} color={colors.primary} />
+            </Pressable>
           </View>
           <Text style={styles.questionText}>{question.questionText}</Text>
+          {phase === 'reading' && (
+            <View style={styles.readingRow}>
+              <Ionicons name="volume-high" size={15} color={colors.accent} />
+              <Text style={[type.caption, { color: colors.accent }]}>Reading question aloud…</Text>
+            </View>
+          )}
         </Card>
 
         <View style={styles.recordZone}>
-          {phase === 'recording' && (
-            <View style={styles.recBadge}>
-              <View style={styles.recDot} />
-              <Text style={styles.recText}>REC {formatTime(elapsed)}</Text>
+          {phase === 'countdown' && (
+            <View style={{ alignItems: 'center' }}>
+              <Text style={styles.countdownNum}>{countdown}</Text>
+              <Text style={type.bodySmall}>Get ready — mic turns on automatically</Text>
             </View>
           )}
-          <Waveform active={phase === 'recording'} tint={colors.recording} height={56} />
+
+          {phase === 'recording' && (
+            <View style={styles.recBadge}>
+              <View style={[styles.recDot, muted && { backgroundColor: colors.textMuted }]} />
+              <Text style={[styles.recText, muted && { color: colors.textMuted }]}>
+                {muted ? 'MUTED' : 'REC'} {formatTime(elapsed)}
+              </Text>
+            </View>
+          )}
+          <Waveform active={phase === 'recording' && !muted} tint={colors.recording} height={56} />
 
           {phase === 'processing' ? (
             <View style={styles.processing}>
@@ -134,29 +295,73 @@ export default function SessionScreen({ navigation, route }) {
                 Analyzing your answer…
               </Text>
             </View>
+          ) : phase === 'recording' ? (
+            <View style={styles.controlsRow}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={muted ? 'Unmute microphone' : 'Mute microphone'}
+                onPress={toggleMute}
+                style={[styles.sideBtn, muted && { backgroundColor: colors.border }]}
+              >
+                <Ionicons name={muted ? 'mic-off' : 'mic'} size={22} color={muted ? colors.textSecondary : colors.primary} />
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Stop recording"
+                onPress={() => stopRecording(false)}
+                style={({ pressed }) => [
+                  styles.recordBtn,
+                  styles.recordBtnActive,
+                  pressed && { transform: [{ scale: 0.96 }] },
+                ]}
+              >
+                <Ionicons name="stop" size={30} color="#fff" />
+              </Pressable>
+              <View style={[styles.sideBtn, { opacity: 0 }]} pointerEvents="none" />
+            </View>
+          ) : phase === 'countdown' ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Start answering now"
+              onPress={() => {
+                clearInterval(countdownRef.current);
+                startRecording();
+              }}
+              style={({ pressed }) => [styles.recordBtn, pressed && { transform: [{ scale: 0.96 }] }]}
+            >
+              <Ionicons name="mic" size={30} color="#fff" />
+            </Pressable>
           ) : (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={phase === 'recording' ? 'Stop recording' : 'Start answering'}
-              onPress={phase === 'recording' ? stopRecording : startRecording}
-              style={({ pressed }) => [
-                styles.recordBtn,
-                phase === 'recording' && styles.recordBtnActive,
-                pressed && { transform: [{ scale: 0.96 }] },
-              ]}
+              accessibilityLabel="Skip readback and answer now"
+              onPress={beginCountdown}
+              style={({ pressed }) => [styles.recordBtn, { opacity: 0.85 }, pressed && { transform: [{ scale: 0.96 }] }]}
             >
-              <Ionicons name={phase === 'recording' ? 'stop' : 'mic'} size={30} color="#fff" />
+              <Ionicons name="play-skip-forward" size={26} color="#fff" />
             </Pressable>
           )}
+
           <Text style={[type.bodySmall, { textAlign: 'center' }]}>
             {phase === 'recording'
-              ? isLast
-                ? 'Tap to finish your final answer'
-                : 'Tap when you finish your answer'
+              ? muted
+                ? 'Mic is muted — tap the mic to resume'
+                : isLast
+                ? 'Tap stop to finish your final answer'
+                : 'Tap stop when you finish your answer'
               : phase === 'processing'
               ? 'Hang tight — feedback is being generated'
-              : 'Tap the mic and answer out loud'}
+              : phase === 'countdown'
+              ? 'Or tap the mic to start right away'
+              : 'Listen, or tap to skip ahead'}
           </Text>
+
+          {phase !== 'processing' && (unlimited || answersRef.current.length > 0) && (
+            <Pressable accessibilityRole="button" onPress={endInterview} style={styles.endBtn}>
+              <Ionicons name="flag-outline" size={16} color={colors.danger} />
+              <Text style={styles.endText}>End interview{phase === 'recording' ? ' after this answer' : ''}</Text>
+            </Pressable>
+          )}
         </View>
       </View>
     </SafeAreaView>
@@ -168,23 +373,38 @@ const styles = StyleSheet.create({
   container: { flex: 1, padding: spacing.lg },
   topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   questionCard: { marginTop: spacing.md, padding: spacing.lg },
+  focusRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.md,
+  },
   focusPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    alignSelf: 'flex-start',
     backgroundColor: colors.primaryLight,
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: radii.pill,
-    marginBottom: spacing.md,
   },
   focusText: { fontFamily: fonts.semibold, fontSize: 12, color: colors.primary },
   questionText: { fontFamily: fonts.semibold, fontSize: 21, lineHeight: 30, color: colors.text },
-  recordZone: { flex: 1, justifyContent: 'flex-end', alignItems: 'center', gap: spacing.md, paddingBottom: spacing.lg },
+  readingRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: spacing.md },
+  recordZone: { flex: 1, justifyContent: 'flex-end', alignItems: 'center', gap: spacing.md, paddingBottom: spacing.md },
+  countdownNum: { fontFamily: fonts.bold, fontSize: 56, color: colors.primary, lineHeight: 62 },
   recBadge: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   recDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.recording },
   recText: { fontFamily: fonts.bold, fontSize: 14, color: colors.recording, letterSpacing: 1 },
+  controlsRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.lg },
+  sideBtn: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: colors.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   recordBtn: {
     width: 76,
     height: 76,
@@ -196,4 +416,14 @@ const styles = StyleSheet.create({
   },
   recordBtnActive: { backgroundColor: colors.recording, shadowColor: colors.recording },
   processing: { flexDirection: 'row', alignItems: 'center', gap: 8, height: 76 },
+  endBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 40,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.pill,
+    backgroundColor: colors.dangerSoft,
+  },
+  endText: { fontFamily: fonts.semibold, fontSize: 13, color: colors.danger },
 });

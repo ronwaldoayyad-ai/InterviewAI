@@ -14,8 +14,16 @@ const SOURCES = [
   { key: 'generic', icon: 'shuffle-outline', title: 'General practice', sub: 'Curated questions for your goals' },
 ];
 
+const COUNT_OPTIONS = [
+  { key: 3, label: '3' },
+  { key: 5, label: '5' },
+  { key: 10, label: '10' },
+  { key: 'unlimited', label: '∞ Unlimited' },
+];
+
 export default function PracticeSetupScreen({ navigation }) {
   const [sessionType, setSessionType] = useState('behavioral');
+  const [questionCount, setQuestionCount] = useState(5);
   const [source, setSource] = useState('generic');
   const [contextText, setContextText] = useState('');
   const [resumeFile, setResumeFile] = useState(null);
@@ -42,15 +50,20 @@ export default function PracticeSetupScreen({ navigation }) {
     setLoading(true);
     try {
       // AI question generation — must stay under the 5s latency budget (PRD §5)
+      const ctx = source === 'resume' ? resumeFile?.name || '' : contextText;
       const questions = await generateQuestions({
         sessionType,
         contextSource: source,
-        contextText: source === 'resume' ? resumeFile?.name || '' : contextText,
+        contextText: ctx,
+        // Unlimited sessions start with a small batch; more stream in as you answer
+        count: questionCount === 'unlimited' ? 3 : questionCount,
       });
       navigation.navigate('HardwareCheck', {
         session: {
           sessionType,
           contextSource: source,
+          contextText: ctx,
+          questionLimit: questionCount,
           questions,
           title: sessionType === 'behavioral' ? 'Behavioral interview' : 'Technical interview',
         },
@@ -84,6 +97,28 @@ export default function PracticeSetupScreen({ navigation }) {
             </Pressable>
           ))}
         </View>
+
+        <Text style={[type.h3, styles.groupLabel]}>Questions per session</Text>
+        <View style={styles.segment}>
+          {COUNT_OPTIONS.map((c) => (
+            <Pressable
+              key={c.key}
+              accessibilityRole="button"
+              accessibilityState={{ selected: questionCount === c.key }}
+              onPress={() => setQuestionCount(c.key)}
+              style={[styles.segmentItem, questionCount === c.key && styles.segmentActive]}
+            >
+              <Text style={[styles.segmentText, questionCount === c.key && styles.segmentTextActive]}>
+                {c.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        {questionCount === 'unlimited' && (
+          <Text style={[type.caption, { marginTop: 6 }]}>
+            Questions keep coming until you tap "End interview" during the session.
+          </Text>
+        )}
 
         <Text style={[type.h3, styles.groupLabel]}>Context source</Text>
         {SOURCES.map((s) => (

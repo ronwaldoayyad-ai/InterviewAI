@@ -3,6 +3,7 @@ import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from '
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Card, SecondaryButton } from '../components/ui';
+import { describeStorageDir, pickStorageDirectory } from '../services/storage';
 import { useApp } from '../state/AppContext';
 import { colors, fonts, spacing, type } from '../theme';
 
@@ -19,8 +20,13 @@ function Row({ icon, label, value }) {
 }
 
 export default function ProfileScreen() {
-  const { user, signOut, deleteAllData } = useApp();
+  const { user, signOut, deleteAllData, storageDirUri, setStorageDirUri } = useApp();
   const goals = user?.careerGoals;
+
+  const chooseFolder = async () => {
+    const dir = await pickStorageDirectory();
+    if (dir) setStorageDirUri(dir);
+  };
 
   const confirmDelete = () => {
     // GDPR/CCPA: users can permanently delete recordings + data (TDD §5)
@@ -54,6 +60,34 @@ export default function ProfileScreen() {
           <Row icon="briefcase-outline" label="Target roles" value={goals?.roles?.join(', ') || 'Not set'} />
           <Row icon="business-outline" label="Industries" value={goals?.industries?.join(', ') || 'Not set'} />
           <Row icon="ribbon-outline" label="Experience" value={goals?.experience || 'Not set'} />
+        </Card>
+
+        <Text style={[type.h2, { marginTop: spacing.lg, marginBottom: spacing.sm }]}>Storage</Text>
+        <Card>
+          <Text style={type.bodySmall}>
+            Choose where session transcripts and audio recordings are saved on your device.
+          </Text>
+          {Platform.OS === 'android' ? (
+            <>
+              <Row
+                icon="folder-outline"
+                label="Save location"
+                value={describeStorageDir(storageDirUri) || 'Not set — asks on first export'}
+              />
+              <SecondaryButton
+                title={storageDirUri ? 'Change folder' : 'Choose folder'}
+                icon="folder-open-outline"
+                onPress={chooseFolder}
+                style={{ marginTop: spacing.sm, minHeight: 44 }}
+              />
+            </>
+          ) : (
+            <Row
+              icon="folder-outline"
+              label="Save location"
+              value={Platform.OS === 'ios' ? 'Chosen via share sheet (Files app)' : 'Browser download folder'}
+            />
+          )}
         </Card>
 
         <Text style={[type.h2, { marginTop: spacing.lg, marginBottom: spacing.sm }]}>Privacy</Text>

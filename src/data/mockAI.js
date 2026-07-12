@@ -88,23 +88,38 @@ function detectTrack(context) {
 
 let idCounter = 1;
 
+function getBank(sessionType, contextText) {
+  return sessionType === 'behavioral'
+    ? BEHAVIORAL_BANK
+    : TECHNICAL_BANK[detectTrack(contextText)];
+}
+
+function toQuestion(q) {
+  return { id: `q_${idCounter++}`, questionText: q.text, expectedFocus: q.focus };
+}
+
+// Sample `count` questions, cycling through the bank when count exceeds its size
+function sampleQuestions(bank, count) {
+  const out = [];
+  while (out.length < count) {
+    out.push(...pick(bank, Math.min(bank.length, count - out.length)));
+  }
+  return out.map(toQuestion);
+}
+
 // Simulates: JD/resume → LLM → structured question JSON (< 5s latency budget)
-export function generateQuestions({ sessionType, contextSource, contextText }) {
+export function generateQuestions({ sessionType, contextSource, contextText, count = 4 }) {
   return new Promise((resolve) => {
     const delay = 1800 + Math.random() * 1500;
     setTimeout(() => {
-      const bank =
-        sessionType === 'behavioral'
-          ? BEHAVIORAL_BANK
-          : TECHNICAL_BANK[detectTrack(contextText)];
-      const questions = pick(bank, 4).map((q) => ({
-        id: `q_${idCounter++}`,
-        questionText: q.text,
-        expectedFocus: q.focus,
-      }));
-      resolve(questions);
+      resolve(sampleQuestions(getBank(sessionType, contextText), count));
     }, delay);
   });
+}
+
+// Single follow-up question for unlimited sessions
+export function nextQuestion({ sessionType, contextText }) {
+  return toQuestion(pick(getBank(sessionType, contextText), 1)[0]);
 }
 
 // Simulates: audio → Whisper STT → LLM critique (TDD §4.3)

@@ -7,6 +7,7 @@ export function AppProvider({ children }) {
   const [onboarded, setOnboarded] = useState(false);
   const [sessions, setSessions] = useState([]); // completed sessions with feedback
   const [readinessScore, setReadinessScore] = useState(42);
+  const [storageDirUri, setStorageDirUri] = useState(null); // Android SAF folder for exports
 
   const value = useMemo(
     () => ({
@@ -14,6 +15,8 @@ export function AppProvider({ children }) {
       onboarded,
       sessions,
       readinessScore,
+      storageDirUri,
+      setStorageDirUri,
       signIn: (profile) => setUser(profile),
       signOut: () => {
         setUser(null);
@@ -33,7 +36,7 @@ export function AppProvider({ children }) {
         setReadinessScore(42);
       },
     }),
-    [user, onboarded, sessions, readinessScore]
+    [user, onboarded, sessions, readinessScore, storageDirUri]
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

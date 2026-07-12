@@ -1,15 +1,37 @@
-import React from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Card, PrimaryButton, ScoreBar, SecondaryButton } from '../components/ui';
+import { exportSession, pickStorageDirectory } from '../services/storage';
 import { useApp } from '../state/AppContext';
 import { colors, fonts, spacing, type } from '../theme';
 
 // Post-session high-level metrics (PRD §4.4)
 export default function SessionSummaryScreen({ navigation, route }) {
-  const { sessions } = useApp();
+  const { sessions, storageDirUri, setStorageDirUri } = useApp();
   const session = sessions.find((s) => s.id === route.params.sessionId);
+  const [exporting, setExporting] = useState(false);
+  const [exportResult, setExportResult] = useState('');
+
+  const saveToDevice = async () => {
+    if (!session) return;
+    setExporting(true);
+    setExportResult('');
+    try {
+      let dir = storageDirUri;
+      // Android: first export prompts for a folder, remembered afterwards
+      if (Platform.OS === 'android' && !dir) {
+        dir = await pickStorageDirectory();
+        if (dir) setStorageDirUri(dir);
+      }
+      setExportResult(await exportSession(session, dir));
+    } catch (e) {
+      setExportResult('Export failed — please try again.');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   if (!session) {
     return (
@@ -73,6 +95,17 @@ export default function SessionSummaryScreen({ navigation, route }) {
           onPress={() => navigation.navigate('AnswerReview', { sessionId: session.id, answerIndex: 0 })}
           style={{ marginTop: spacing.md }}
         />
+        <SecondaryButton
+          title={exporting ? 'Saving…' : 'Save transcript & audio to device'}
+          icon="download-outline"
+          onPress={saveToDevice}
+          style={{ marginTop: spacing.sm }}
+        />
+        {exportResult ? (
+          <Text style={[type.caption, { textAlign: 'center', marginTop: spacing.sm, color: colors.success }]}>
+            {exportResult}
+          </Text>
+        ) : null}
         <SecondaryButton
           title="Back to dashboard"
           onPress={() => navigation.popToTop()}
