@@ -34,7 +34,8 @@
           "cameraPermission": "InterviewAI uses your camera for the pre-session setup check."
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      "expo-secure-store"
     ]
   }
 }

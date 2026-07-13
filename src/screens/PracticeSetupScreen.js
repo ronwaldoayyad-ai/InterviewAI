@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import { Card, PrimaryButton, TextField } from '../components/ui';
 import { generateQuestions, makeIntroQuestion } from '../data/mockAI';
+import { generateQuestionsAI } from '../services/claudeAI';
 import { extractFromResume, extractFromUrl } from '../services/contextExtractor';
 import { parseQuestions, readQuestionFile } from '../services/questions';
 import { previewVoice } from '../services/voice';
@@ -28,10 +29,11 @@ const COUNT_OPTIONS = [
 ];
 
 export default function PracticeSetupScreen({ navigation }) {
-  const { voiceGender, setVoiceGender, appVolume } = useApp();
+  const { voiceGender, setVoiceGender, appVolume, claudeApiKey, user } = useApp();
   const [sessionType, setSessionType] = useState('behavioral');
   const [questionCount, setQuestionCount] = useState(5);
   const [source, setSource] = useState('generic');
+  const [engineNote, setEngineNote] = useState('');
   const [contextText, setContextText] = useState('');
   const [resumeFile, setResumeFile] = useState(null);
   const [startWithIntro, setStartWithIntro] = useState(true);
@@ -84,6 +86,7 @@ export default function PracticeSetupScreen({ navigation }) {
     if (source === 'custom' && parsedCustom.length === 0)
       return setError('Upload or paste at least one question (one per line).');
     setError('');
+    setEngineNote('');
     setLoading(true);
     try {
       // Ground the questions in the real content of the chosen source
@@ -95,14 +98,35 @@ export default function PracticeSetupScreen({ navigation }) {
       }
       // (linkedin with pasted profile text and jd use the text as-is)
       const customBank = source === 'custom' ? parsedCustom : undefined;
-      const questions = await generateQuestions({
-        sessionType,
-        contextSource: source,
-        contextText: ctx,
-        customBank,
-        // Unlimited sessions start with a small batch; more stream in as you answer
-        count: questionCount === 'unlimited' ? 3 : questionCount,
-      });
+      const count = questionCount === 'unlimited' ? 3 : questionCount;
+
+      // Real Claude generation when a key is set; local engine otherwise —
+      // and as the fallback if the API call fails, so a session always starts.
+      let questions;
+      if (claudeApiKey && source !== 'custom') {
+        try {
+          questions = await generateQuestionsAI({
+            apiKey: claudeApiKey,
+            sessionType,
+            contextSource: source,
+            contextText: ctx,
+            count,
+            careerGoals: user?.careerGoals,
+          });
+        } catch (aiErr) {
+          setEngineNote(`${aiErr.message} Used the local engine instead.`);
+        }
+      }
+      if (!questions) {
+        questions = await generateQuestions({
+          sessionType,
+          contextSource: source,
+          contextText: ctx,
+          customBank,
+          // Unlimited sessions start with a small batch; more stream in as you answer
+          count,
+        });
+      }
       // Icebreaker first, before the real behavioral/technical set
       if (startWithIntro) questions.unshift(makeIntroQuestion());
       navigation.navigate('HardwareCheck', {
@@ -314,6 +338,9 @@ export default function PracticeSetupScreen({ navigation }) {
         </Card>
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
+        {engineNote ? (
+          <Text style={[type.caption, { color: colors.warning, marginTop: 4 }]}>{engineNote}</Text>
+        ) : null}
 
         <PrimaryButton
           title={loading ? 'Generating questions…' : 'Generate my interview'}
@@ -323,7 +350,9 @@ export default function PracticeSetupScreen({ navigation }) {
           style={{ marginTop: spacing.md }}
         />
         <Text style={[type.caption, { textAlign: 'center', marginTop: spacing.sm }]}>
-          Powered by AI · usually ready in under 5 seconds
+          {claudeApiKey
+            ? 'Powered by Claude · questions written from your context'
+            : 'Local engine · add your Anthropic API key in Profile → AI engine for real AI questions'}
         </Text>
         <View style={{ height: spacing.xl }} />
       </ScrollView>
