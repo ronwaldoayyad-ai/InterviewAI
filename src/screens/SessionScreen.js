@@ -29,9 +29,8 @@ export default function SessionScreen({ navigation, route }) {
   const unlimited = session.questionLimit === 'unlimited';
   const { addSession, voiceGender, appVolume, setAppVolume } = useApp();
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  // Spatial stereo cues: orb activation sweep + mic-on chime
-  const activateSound = useAudioPlayer(require('../../assets/sounds/siri-activate.wav'));
-  const micOnSound = useAudioPlayer(require('../../assets/sounds/mic-on.wav'));
+  // Notification cue played when a question starts and when the mic arms
+  const notificationSound = useAudioPlayer(require('../../assets/sounds/notification.mp3'));
   const playSound = (player) => {
     try {
       player.volume = appVolume;
@@ -71,7 +70,7 @@ export default function SessionScreen({ navigation, route }) {
     const advance = () => {
       if (!cancelled && phaseRef.current === 'reading') beginCountdown();
     };
-    playSound(activateSound);
+    playSound(notificationSound);
     speechRef.current = speakText(question.questionText, voiceGender, {
       volume: appVolume,
       onDone: advance,
@@ -114,7 +113,7 @@ export default function SessionScreen({ navigation, route }) {
 
   const startRecording = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    playSound(micOnSound);
+    playSound(notificationSound);
     try {
       const perm = await AudioModule.getRecordingPermissionsAsync();
       if (perm.granted) {
