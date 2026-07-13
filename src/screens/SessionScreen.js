@@ -3,8 +3,9 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { AudioModule, RecordingPresets, useAudioRecorder } from 'expo-audio';
+import { AudioModule, RecordingPresets, useAudioPlayer, useAudioRecorder } from 'expo-audio';
 import { Card, StepProgress } from '../components/ui';
+import SiriOrb from '../components/SiriOrb';
 import Waveform from '../components/Waveform';
 import { analyzeAnswer, nextQuestion, summarizeSession } from '../data/mockAI';
 import { persistRecording } from '../services/storage';
@@ -27,6 +28,15 @@ export default function SessionScreen({ navigation, route }) {
   const unlimited = session.questionLimit === 'unlimited';
   const { addSession, voiceGender } = useApp();
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  // Spatial stereo cues: orb activation sweep + mic-on chime
+  const activateSound = useAudioPlayer(require('../../assets/sounds/siri-activate.wav'));
+  const micOnSound = useAudioPlayer(require('../../assets/sounds/mic-on.wav'));
+  const playSound = (player) => {
+    try {
+      player.seekTo(0);
+      player.play();
+    } catch {}
+  };
 
   const [questions, setQuestions] = useState(session.questions);
   const [index, setIndex] = useState(0);
@@ -54,6 +64,7 @@ export default function SessionScreen({ navigation, route }) {
     const advance = () => {
       if (!cancelled && phaseRef.current === 'reading') beginCountdown();
     };
+    playSound(activateSound);
     speechRef.current = speakText(question.questionText, voiceGender, {
       onDone: advance,
       onError: advance,
@@ -95,6 +106,7 @@ export default function SessionScreen({ navigation, route }) {
 
   const startRecording = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    playSound(micOnSound);
     try {
       const perm = await AudioModule.getRecordingPermissionsAsync();
       if (perm.granted) {
@@ -181,7 +193,11 @@ export default function SessionScreen({ navigation, route }) {
         if (unlimited && index + 1 >= questions.length) {
           setQuestions((qs) => [
             ...qs,
-            nextQuestion({ sessionType: session.sessionType, contextText: session.contextText }),
+            nextQuestion({
+              sessionType: session.sessionType,
+              contextText: session.contextText,
+              customBank: session.customBank,
+            }),
           ]);
         }
         setIndex((i) => i + 1);
@@ -260,6 +276,19 @@ export default function SessionScreen({ navigation, route }) {
         </Card>
 
         <View style={styles.recordZone}>
+          <SiriOrb
+            key={index}
+            size={88}
+            state={
+              phase === 'reading'
+                ? 'speaking'
+                : phase === 'countdown'
+                ? 'countdown'
+                : phase === 'recording'
+                ? 'listening'
+                : 'processing'
+            }
+          />
           {phase === 'countdown' && (
             <View style={{ alignItems: 'center' }}>
               <Text style={styles.countdownNum}>{countdown}</Text>

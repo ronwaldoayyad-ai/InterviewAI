@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import { Card, PrimaryButton, TextField } from '../components/ui';
-import { generateQuestions } from '../data/mockAI';
+import { generateQuestions, makeIntroQuestion } from '../data/mockAI';
+import { parseQuestions, readQuestionFile } from '../services/questions';
 import { previewVoice } from '../services/voice';
 import { useApp } from '../state/AppContext';
 import { colors, fonts, spacing, type } from '../theme';
@@ -13,6 +14,7 @@ const SOURCES = [
   { key: 'jd', icon: 'document-text-outline', title: 'Job description', sub: 'Paste the JD for targeted questions' },
   { key: 'resume', icon: 'cloud-upload-outline', title: 'Resume upload', sub: 'PDF or DOCX' },
   { key: 'linkedin', icon: 'logo-linkedin', title: 'LinkedIn URL', sub: 'We read your profile highlights' },
+  { key: 'custom', icon: 'list-outline', title: 'My question set', sub: 'Upload .txt/.json or paste your own questions' },
   { key: 'generic', icon: 'shuffle-outline', title: 'General practice', sub: 'Curated questions for your goals' },
 ];
 
@@ -30,8 +32,29 @@ export default function PracticeSetupScreen({ navigation }) {
   const [source, setSource] = useState('generic');
   const [contextText, setContextText] = useState('');
   const [resumeFile, setResumeFile] = useState(null);
+  const [startWithIntro, setStartWithIntro] = useState(true);
+  const [customText, setCustomText] = useState('');
+  const [customFileName, setCustomFileName] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  const parsedCustom = source === 'custom' ? parseQuestions(customText) : [];
+
+  const pickQuestionFile = async () => {
+    const res = await DocumentPicker.getDocumentAsync({
+      type: ['text/plain', 'application/json', 'text/csv', 'text/comma-separated-values'],
+    });
+    if (!res.canceled && res.assets?.length) {
+      try {
+        const content = await readQuestionFile(res.assets[0]);
+        setCustomText(content);
+        setCustomFileName(res.assets[0].name);
+        setError('');
+      } catch {
+        setError("Couldn't read that file — try a plain .txt or .json.");
+      }
+    }
+  };
 
   const pickResume = async () => {
     const res = await DocumentPicker.getDocumentAsync({
@@ -49,23 +72,30 @@ export default function PracticeSetupScreen({ navigation }) {
     if (source === 'linkedin' && !/linkedin\.com/.test(contextText))
       return setError('Enter a valid LinkedIn profile URL.');
     if (source === 'resume' && !resumeFile) return setError('Attach your resume first.');
+    if (source === 'custom' && parsedCustom.length === 0)
+      return setError('Upload or paste at least one question (one per line).');
     setError('');
     setLoading(true);
     try {
       // AI question generation — must stay under the 5s latency budget (PRD §5)
       const ctx = source === 'resume' ? resumeFile?.name || '' : contextText;
+      const customBank = source === 'custom' ? parsedCustom : undefined;
       const questions = await generateQuestions({
         sessionType,
         contextSource: source,
         contextText: ctx,
+        customBank,
         // Unlimited sessions start with a small batch; more stream in as you answer
         count: questionCount === 'unlimited' ? 3 : questionCount,
       });
+      // Icebreaker first, before the real behavioral/technical set
+      if (startWithIntro) questions.unshift(makeIntroQuestion());
       navigation.navigate('HardwareCheck', {
         session: {
           sessionType,
           contextSource: source,
           contextText: ctx,
+          customBank,
           questionLimit: questionCount,
           questions,
           title: sessionType === 'behavioral' ? 'Behavioral interview' : 'Technical interview',
@@ -206,6 +236,55 @@ export default function PracticeSetupScreen({ navigation }) {
           </Pressable>
         )}
 
+        {source === 'custom' && (
+          <>
+            <Pressable onPress={pickQuestionFile} accessibilityRole="button" accessibilityLabel="Upload question file">
+              <Card style={styles.uploadCard}>
+                <Ionicons
+                  name={customFileName ? 'document-attach' : 'cloud-upload-outline'}
+                  size={28}
+                  color={colors.primary}
+                />
+                <Text style={[type.label, { marginTop: 8, color: colors.primary }]}>
+                  {customFileName || 'Tap to upload .txt / .json / .csv'}
+                </Text>
+              </Card>
+            </Pressable>
+            <TextField
+              label="Or paste questions (one per line)"
+              value={customText}
+              onChangeText={(t) => {
+                setCustomText(t);
+                setCustomFileName(null);
+              }}
+              placeholder={'Why do you want this role?\nDescribe your proudest project.'}
+              multiline
+            />
+            {parsedCustom.length > 0 && (
+              <Text style={[type.caption, { color: colors.success, marginTop: -8, marginBottom: spacing.sm }]}>
+                {parsedCustom.length} question{parsedCustom.length === 1 ? '' : 's'} ready — used for your{' '}
+                {sessionType} session
+              </Text>
+            )}
+          </>
+        )}
+
+        <Card style={styles.introRow}>
+          <View style={{ flex: 1, marginRight: spacing.sm }}>
+            <Text style={type.h3}>Start with an introduction</Text>
+            <Text style={type.bodySmall}>
+              First question is always "Tell me about yourself" before the {sessionType} set begins.
+            </Text>
+          </View>
+          <Switch
+            value={startWithIntro}
+            onValueChange={setStartWithIntro}
+            trackColor={{ true: colors.primary, false: colors.border }}
+            thumbColor="#fff"
+            accessibilityLabel="Toggle introduction question"
+          />
+        </Card>
+
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
         <PrimaryButton
@@ -273,5 +352,6 @@ const styles = StyleSheet.create({
     borderColor: colors.primarySoft,
     marginBottom: spacing.md,
   },
+  introRow: { flexDirection: 'row', alignItems: 'center', marginTop: spacing.xs, marginBottom: spacing.sm },
   error: { ...type.bodySmall, color: colors.danger, marginTop: 4 },
 });

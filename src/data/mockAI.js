@@ -88,7 +88,19 @@ function detectTrack(context) {
 
 let idCounter = 1;
 
-function getBank(sessionType, contextText) {
+const INTRO_QUESTIONS = [
+  'Tell me about yourself.',
+  "Tell me about yourself and what draws you to this role.",
+  'Before we dive in — walk me through your background and what you do today.',
+];
+
+function getBank(sessionType, contextText, customBank) {
+  if (customBank && customBank.length) {
+    return customBank.map((q) => ({
+      text: q.text,
+      focus: q.focus || (sessionType === 'behavioral' ? 'STAR method' : 'Your question set'),
+    }));
+  }
   return sessionType === 'behavioral'
     ? BEHAVIORAL_BANK
     : TECHNICAL_BANK[detectTrack(contextText)];
@@ -96,6 +108,14 @@ function getBank(sessionType, contextText) {
 
 function toQuestion(q) {
   return { id: `q_${idCounter++}`, questionText: q.text, expectedFocus: q.focus };
+}
+
+// Optional icebreaker prepended to every session (enhancement: intro question)
+export function makeIntroQuestion() {
+  return toQuestion({
+    text: INTRO_QUESTIONS[Math.floor(Math.random() * INTRO_QUESTIONS.length)],
+    focus: 'Introduction',
+  });
 }
 
 // Sample `count` questions, cycling through the bank when count exceeds its size
@@ -107,19 +127,20 @@ function sampleQuestions(bank, count) {
   return out.map(toQuestion);
 }
 
-// Simulates: JD/resume → LLM → structured question JSON (< 5s latency budget)
-export function generateQuestions({ sessionType, contextSource, contextText, count = 4 }) {
+// Simulates: JD/resume → LLM → structured question JSON (< 5s latency budget).
+// A custom question set skips the "AI" and samples the user's own bank.
+export function generateQuestions({ sessionType, contextSource, contextText, count = 4, customBank }) {
   return new Promise((resolve) => {
-    const delay = 1800 + Math.random() * 1500;
+    const delay = customBank ? 500 : 1800 + Math.random() * 1500;
     setTimeout(() => {
-      resolve(sampleQuestions(getBank(sessionType, contextText), count));
+      resolve(sampleQuestions(getBank(sessionType, contextText, customBank), count));
     }, delay);
   });
 }
 
 // Single follow-up question for unlimited sessions
-export function nextQuestion({ sessionType, contextText }) {
-  return toQuestion(pick(getBank(sessionType, contextText), 1)[0]);
+export function nextQuestion({ sessionType, contextText, customBank }) {
+  return toQuestion(pick(getBank(sessionType, contextText, customBank), 1)[0]);
 }
 
 // Simulates: audio → Whisper STT → LLM critique (TDD §4.3)
