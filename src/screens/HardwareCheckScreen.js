@@ -46,9 +46,9 @@ export default function HardwareCheckScreen({ navigation, route }) {
   const probeRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
 
   useEffect(() => {
-    // Pre-synthesize the first question during the setup check so the
-    // readback starts the instant the interview begins
-    if (session.questions?.[0]) prefetchSpeech(session.questions[0].questionText, voiceGender);
+    // Pre-synthesize the whole question set during the setup check — the
+    // synth queue works through it while the user checks mic and camera
+    (session.questions || []).forEach((q) => prefetchSpeech(q.questionText, voiceGender));
 
     // Network: lightweight ping to measure latency ('no-cors' so the web preview works too)
     (async () => {

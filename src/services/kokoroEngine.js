@@ -1,25 +1,28 @@
-// Bridge to the hidden WebView running Kokoro-82M (kokoro-js, WASM).
+// Bridge to the hidden WebView running Kokoro-82M (kokoro-js).
 // The WebView only synthesizes (posts WAV audio back as base64); playback
 // happens here through expo-audio so it uses the loudspeaker, ignores the
 // iOS silent switch, and follows the in-app volume control.
 //
-// Latency strategy:
-//  - sentence pipeline: play sentence 1 while later sentences synthesize
-//  - prefetch cache: screens pre-synthesize upcoming questions so playback
-//    starts the moment the text appears
-//  - first-audio timeout: if nothing is ready within budget (slow devices),
-//    reject so voice.js falls back to the system voice instead of silence
+// Latency strategy — phone-grade synthesis is slow, so the rule is simple:
+// Kokoro NEVER makes the user wait. kokoroHasAudio() tells voice.js whether
+// every chunk of a text is already synthesized (memory or disk cache); if
+// not, the system voice speaks instantly while prefetch warms the cache.
+// Screens prefetch all upcoming questions, chunks are clause-sized so they
+// synthesize fast, and results persist to disk across app restarts.
 import { createAudioPlayer } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
 import { setPlaybackMode } from './audioSession';
 
-const FIRST_AUDIO_TIMEOUT_MS = 12000;
-const SYNTH_TIMEOUT_MS = 45000;
-const CACHE_MAX = 16;
+const SYNTH_TIMEOUT_MS = 120000; // background prefetch can take its time
+const MEM_CACHE_MAX = 24;
+const DISK_CACHE_MAX = 60;
+const CHUNK_MAX_CHARS = 90;
 const SAMPLE_RATE = 24000; // Kokoro output
 
+const DISK_DIR = FileSystem.documentDirectory ? `${FileSystem.documentDirectory}tts-cache/` : null;
+
 let webview = null;
-let state = { status: 'loading', progress: 0, error: null }; // loading | ready | failed
+let state = { status: 'loading', progress: 0, backend: null, error: null }; // loading | ready | failed
 const listeners = new Set();
 let idCounter = 1;
 
@@ -46,6 +49,99 @@ export function registerKokoroWebView(ref) {
   webview = ref;
 }
 
+// ——— caching (memory + disk) ———
+
+const memCache = new Map(); // `${voice}|${chunk}` -> b64
+const diskIndex = new Set(); // hashed filenames present on disk
+
+function hashKey(key) {
+  let h = 5381;
+  for (let i = 0; i < key.length; i++) h = ((h << 5) + h + key.charCodeAt(i)) >>> 0;
+  return `k${h.toString(36)}.wav`;
+}
+
+function memPut(key, value) {
+  if (memCache.has(key)) memCache.delete(key);
+  memCache.set(key, value);
+  while (memCache.size > MEM_CACHE_MAX) memCache.delete(memCache.keys().next().value);
+}
+
+async function initDiskCache() {
+  if (!DISK_DIR) return;
+  try {
+    await FileSystem.makeDirectoryAsync(DISK_DIR, { intermediates: true });
+    const files = await FileSystem.readDirectoryAsync(DISK_DIR);
+    files.forEach((f) => diskIndex.add(f));
+    // Light cleanup so the cache doesn't grow unbounded
+    if (files.length > DISK_CACHE_MAX) {
+      files.slice(0, files.length - DISK_CACHE_MAX).forEach((f) => {
+        diskIndex.delete(f);
+        FileSystem.deleteAsync(DISK_DIR + f, { idempotent: true }).catch(() => {});
+      });
+    }
+  } catch {}
+}
+
+function diskPut(key, b64) {
+  if (!DISK_DIR) return;
+  const file = hashKey(key);
+  FileSystem.writeAsStringAsync(DISK_DIR + file, b64, { encoding: FileSystem.EncodingType.Base64 })
+    .then(() => diskIndex.add(file))
+    .catch(() => {});
+}
+
+async function diskGet(key) {
+  const file = hashKey(key);
+  if (!DISK_DIR || !diskIndex.has(file)) return null;
+  try {
+    return await FileSystem.readAsStringAsync(DISK_DIR + file, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+  } catch {
+    diskIndex.delete(file);
+    return null;
+  }
+}
+
+// ——— text chunking: sentences, long ones split at clause boundaries ———
+
+function splitForSynthesis(text) {
+  const sentences = ((text || '').match(/[^.!?]+[.!?]*/g) || [text]).map((s) => s.trim()).filter(Boolean);
+  const chunks = [];
+  for (const sentence of sentences) {
+    if (sentence.length <= CHUNK_MAX_CHARS) {
+      chunks.push(sentence);
+      continue;
+    }
+    let current = '';
+    for (const part of sentence.split(/,\s+/)) {
+      const candidate = current ? `${current}, ${part}` : part;
+      if (candidate.length > CHUNK_MAX_CHARS && current) {
+        chunks.push(`${current},`);
+        current = part;
+      } else {
+        current = candidate;
+      }
+    }
+    if (current) chunks.push(current);
+  }
+  return chunks.filter((c) => c.length > 1);
+}
+
+const VOICE_FOR_GENDER = { female: 'af_heart', male: 'am_michael' };
+const voiceFor = (gender) => VOICE_FOR_GENDER[gender] || VOICE_FOR_GENDER.female;
+
+// True only when EVERY chunk is already synthesized — the gate that keeps
+// Kokoro from ever adding latency
+export function kokoroHasAudio(text, gender) {
+  if (!kokoroIsReady()) return false;
+  const voice = voiceFor(gender);
+  return splitForSynthesis(text).every((chunk) => {
+    const key = `${voice}|${chunk}`;
+    return memCache.has(key) || diskIndex.has(hashKey(key));
+  });
+}
+
 // ——— synthesis plumbing (one request at a time through the WebView) ———
 
 const synthWaiters = new Map(); // id -> { resolve, reject, timer }
@@ -62,7 +158,7 @@ export function handleKokoroMessage(raw) {
       setState({ status: 'loading', progress: msg.progress || 0 });
       break;
     case 'ready':
-      setState({ status: 'ready', progress: 100 });
+      initDiskCache().finally(() => setState({ status: 'ready', progress: 100, backend: msg.backend || 'wasm' }));
       break;
     case 'init_error':
       setState({ status: 'failed', error: msg.message });
@@ -99,42 +195,41 @@ function requestSynthesis(text, voice) {
   });
 }
 
-// Serialize synth requests; cache results so repeats are instant
+// Serialize synth requests; dedupe in-flight chunks
 let synthChain = Promise.resolve();
-const audioCache = new Map(); // `${voice}|${sentence}` -> b64
+const inFlight = new Map(); // key -> Promise<b64>
 
-function cachePut(key, value) {
-  if (audioCache.has(key)) audioCache.delete(key);
-  audioCache.set(key, value);
-  while (audioCache.size > CACHE_MAX) audioCache.delete(audioCache.keys().next().value);
-}
-
-function splitSentences(text) {
-  return (text.match(/[^.!?]+[.!?]*/g) || [text]).map((s) => s.trim()).filter(Boolean);
-}
-
-function getAudio(voice, sentence) {
-  const key = `${voice}|${sentence}`;
-  if (audioCache.has(key)) return Promise.resolve(audioCache.get(key));
-  const run = () => requestSynthesis(sentence, voice);
-  const job = synthChain.then(run, run);
-  synthChain = job.then(
-    () => {},
-    () => {}
-  );
-  return job.then((b64) => {
-    cachePut(key, b64);
+function getAudio(voice, chunk) {
+  const key = `${voice}|${chunk}`;
+  if (memCache.has(key)) return Promise.resolve(memCache.get(key));
+  if (inFlight.has(key)) return inFlight.get(key);
+  const job = (async () => {
+    const fromDisk = await diskGet(key);
+    if (fromDisk) {
+      memPut(key, fromDisk);
+      return fromDisk;
+    }
+    const run = () => requestSynthesis(chunk, voice);
+    const chained = synthChain.then(run, run);
+    synthChain = chained.then(
+      () => {},
+      () => {}
+    );
+    const b64 = await chained;
+    memPut(key, b64);
+    diskPut(key, b64);
     return b64;
-  });
+  })();
+  inFlight.set(key, job);
+  job.finally(() => inFlight.delete(key));
+  return job;
 }
 
-const VOICE_FOR_GENDER = { female: 'af_heart', male: 'am_michael' };
-
-// Warm the cache for text that's about to be spoken (fire-and-forget)
+// Warm the cache for text that will be spoken soon (fire-and-forget)
 export function kokoroPrefetch(text, gender) {
   if (!kokoroIsReady() || !text) return;
-  const voice = VOICE_FOR_GENDER[gender] || VOICE_FOR_GENDER.female;
-  splitSentences(text).forEach((s) => getAudio(voice, s).catch(() => {}));
+  const voice = voiceFor(gender);
+  splitForSynthesis(text).forEach((chunk) => getAudio(voice, chunk).catch(() => {}));
 }
 
 // ——— native playback ———
@@ -157,7 +252,7 @@ function stopPlayback() {
 function playB64(b64, volume) {
   return new Promise((resolve, reject) => {
     (async () => {
-      const uri = `${FileSystem.cacheDirectory}kokoro-${idCounter++}.wav`;
+      const uri = `${FileSystem.cacheDirectory}kokoro-play-${idCounter++}.wav`;
       try {
         await FileSystem.writeAsStringAsync(uri, b64, { encoding: FileSystem.EncodingType.Base64 });
         await setPlaybackMode(); // loudspeaker + plays in silent mode
@@ -189,27 +284,17 @@ function playB64(b64, volume) {
   });
 }
 
+// Callers must check kokoroHasAudio() first — every chunk plays from cache
 export function kokoroSpeak(text, gender, { onDone, onError, volume = 1.0 } = {}) {
-  const voice = VOICE_FOR_GENDER[gender] || VOICE_FOR_GENDER.female;
+  const voice = voiceFor(gender);
   let aborted = false;
 
   (async () => {
     try {
-      const sentences = splitSentences(text);
-      // Queue every sentence now — later ones synthesize while earlier ones play
-      const jobs = sentences.map((s) => getAudio(voice, s));
-      // If the first chunk isn't ready in time, hand off to the system voice
-      const first = await Promise.race([
-        jobs[0],
-        new Promise((_, rej) =>
-          setTimeout(() => rej(new Error('first-audio timeout')), FIRST_AUDIO_TIMEOUT_MS)
-        ),
-      ]);
-      if (aborted) return;
-      await playB64(first, volume);
-      for (let i = 1; i < sentences.length; i++) {
+      const chunks = splitForSynthesis(text);
+      for (let i = 0; i < chunks.length; i++) {
         if (aborted) return;
-        const b64 = await jobs[i];
+        const b64 = await getAudio(voice, chunks[i]);
         if (aborted) return;
         await playB64(b64, volume);
       }

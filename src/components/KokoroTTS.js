@@ -56,17 +56,33 @@ const PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>
   try {
     const { KokoroTTS } = await import('https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm');
     let lastPct = -1;
-    tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
-      dtype: 'q8',
-      device: 'wasm',
-      progress_callback: (p) => {
-        if (p.status === 'progress' && p.total) {
-          const pct = Math.round((p.loaded / p.total) * 100);
-          if (pct !== lastPct) { lastPct = pct; post({ type: 'progress', progress: pct }); }
-        }
-      },
-    });
-    post({ type: 'ready' });
+    const progress_callback = (p) => {
+      if (p.status === 'progress' && p.total) {
+        const pct = Math.round((p.loaded / p.total) * 100);
+        if (pct !== lastPct) { lastPct = pct; post({ type: 'progress', progress: pct }); }
+      }
+    };
+    // Prefer GPU inference (5-10x faster synthesis); fall back to WASM+q8
+    const attempts = [];
+    if (navigator.gpu) attempts.push({ device: 'webgpu', dtype: 'fp32' });
+    attempts.push({ device: 'wasm', dtype: 'q8' });
+    let backend = null, lastErr = null;
+    for (const opts of attempts) {
+      try {
+        lastPct = -1;
+        tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
+          ...opts, progress_callback,
+        });
+        backend = opts.device;
+        break;
+      } catch (e) { lastErr = e; tts = null; }
+    }
+    if (!tts) throw lastErr || new Error('no usable backend');
+    // Warm-up: the first generate() compiles kernels/shaders and is much
+    // slower than steady state — do it now so real requests are fast
+    post({ type: 'progress', progress: 100 });
+    try { await tts.generate('Okay, ready.', { voice: 'af_heart' }); } catch (e) {}
+    post({ type: 'ready', backend });
   } catch (e) {
     post({ type: 'init_error', message: String(e && e.message || e) });
   }

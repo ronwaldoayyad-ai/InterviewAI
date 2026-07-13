@@ -35,9 +35,11 @@ export default function ProfileScreen() {
     Platform.OS === 'web'
       ? 'System voice (web preview)'
       : kokoro.status === 'ready'
-      ? 'Kokoro-82M — ready'
+      ? `Kokoro-82M — ready (${kokoro.backend === 'webgpu' ? 'GPU' : 'CPU'})`
       : kokoro.status === 'failed'
       ? 'System voice (Kokoro unavailable)'
+      : kokoro.progress >= 100
+      ? 'Kokoro-82M — preparing…'
       : `Kokoro-82M — downloading ${kokoro.progress}%`;
 
   const saveKey = async () => {

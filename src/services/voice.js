@@ -3,7 +3,7 @@
 import { Platform } from 'react-native';
 import * as Speech from 'expo-speech';
 import { setPlaybackMode } from './audioSession';
-import { kokoroIsReady, kokoroPrefetch, kokoroSpeak } from './kokoroEngine';
+import { kokoroHasAudio, kokoroIsReady, kokoroPrefetch, kokoroSpeak } from './kokoroEngine';
 
 // Pre-synthesize upcoming text so playback starts instantly when shown
 export function prefetchSpeech(text, gender) {
@@ -98,9 +98,10 @@ const canSpeak = () =>
 // Speaks text sentence-by-sentence with short pauses between sentences, which
 // sounds far less robotic than one monotone run. Returns a cancellable handle.
 export function speakText(text, gender, { onDone, onError, volume = 1.0 } = {}) {
-  // Prefer the Kokoro-82M neural voice when its model is loaded (native only);
-  // if synthesis fails mid-flight, retry the same text with the system voice.
-  if (kokoroIsReady()) {
+  // Use the Kokoro-82M neural voice ONLY when its audio is fully synthesized
+  // already — it must never add latency. If playback fails mid-flight, the
+  // system voice retries the same text.
+  if (kokoroIsReady() && kokoroHasAudio(text, gender)) {
     let fallbackHandle = null;
     const kokoroHandle = kokoroSpeak(text, gender, {
       volume,
@@ -116,6 +117,9 @@ export function speakText(text, gender, { onDone, onError, volume = 1.0 } = {}) 
       },
     };
   }
+  // Not ready yet: speak instantly with the system voice and warm Kokoro
+  // so the next readback (or replay) is neural
+  prefetchSpeech(text, gender);
   return speakWithSystemVoice(text, gender, { onDone, onError, volume });
 }
 
