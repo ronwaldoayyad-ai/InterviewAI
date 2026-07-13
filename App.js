@@ -10,6 +10,7 @@ import {
   Inter_700Bold,
 } from '@expo-google-fonts/inter';
 import { AppProvider } from './src/state/AppContext';
+import KokoroTTS from './src/components/KokoroTTS';
 import RootNavigator from './src/navigation/RootNavigator';
 import { colors } from './src/theme';
 
@@ -33,6 +34,7 @@ export default function App() {
     <SafeAreaProvider>
       <AppProvider>
         <StatusBar style="dark" />
+        <KokoroTTS />
         <RootNavigator />
       </AppProvider>
     </SafeAreaProvider>

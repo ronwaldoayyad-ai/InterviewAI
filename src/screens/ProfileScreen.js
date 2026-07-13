@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Card, PrimaryButton, SecondaryButton, TextField } from '../components/ui';
 import { CLAUDE_MODEL, verifyApiKey } from '../services/claudeAI';
+import { subscribeKokoro } from '../services/kokoroEngine';
 import { describeStorageDir, pickStorageDirectory } from '../services/storage';
 import { useApp } from '../state/AppContext';
 import { colors, fonts, spacing, type } from '../theme';
@@ -26,6 +27,18 @@ export default function ProfileScreen() {
   const [keyInput, setKeyInput] = useState('');
   const [keyStatus, setKeyStatus] = useState('');
   const [verifying, setVerifying] = useState(false);
+  const [kokoro, setKokoro] = useState({ status: 'loading', progress: 0 });
+
+  useEffect(() => subscribeKokoro(setKokoro), []);
+
+  const kokoroLabel =
+    Platform.OS === 'web'
+      ? 'System voice (web preview)'
+      : kokoro.status === 'ready'
+      ? 'Kokoro-82M — ready'
+      : kokoro.status === 'failed'
+      ? 'System voice (Kokoro unavailable)'
+      : `Kokoro-82M — downloading ${kokoro.progress}%`;
 
   const saveKey = async () => {
     const key = keyInput.trim();
@@ -155,6 +168,7 @@ export default function ProfileScreen() {
               {keyStatus}
             </Text>
           ) : null}
+          <Row icon="mic-outline" label="Interviewer voice" value={kokoroLabel} />
         </Card>
 
         <Text style={[type.h2, { marginTop: spacing.lg, marginBottom: spacing.sm }]}>Storage</Text>

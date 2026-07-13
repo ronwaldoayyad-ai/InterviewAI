@@ -3,7 +3,8 @@
 // mockAI.js remains the fallback so the app always works offline.
 import Anthropic from '@anthropic-ai/sdk';
 
-export const CLAUDE_MODEL = 'claude-opus-4-8';
+// Haiku 4.5: fastest/cheapest Claude — right fit for short question generation
+export const CLAUDE_MODEL = 'claude-haiku-4-5';
 
 function makeClient(apiKey) {
   return new Anthropic({

@@ -3,6 +3,7 @@
 import { Platform } from 'react-native';
 import * as Speech from 'expo-speech';
 import { setPlaybackMode } from './audioSession';
+import { kokoroIsReady, kokoroSpeak } from './kokoroEngine';
 
 // Known first names of platform voices (iOS/macOS + common web voices)
 const FEMALE_NAMES = [
@@ -92,6 +93,29 @@ const canSpeak = () =>
 // Speaks text sentence-by-sentence with short pauses between sentences, which
 // sounds far less robotic than one monotone run. Returns a cancellable handle.
 export function speakText(text, gender, { onDone, onError, volume = 1.0 } = {}) {
+  // Prefer the Kokoro-82M neural voice when its model is loaded (native only);
+  // if synthesis fails mid-flight, retry the same text with the system voice.
+  if (kokoroIsReady()) {
+    let fallbackHandle = null;
+    const kokoroHandle = kokoroSpeak(text, gender, {
+      volume,
+      onDone,
+      onError: () => {
+        fallbackHandle = speakWithSystemVoice(text, gender, { onDone, onError, volume });
+      },
+    });
+    return {
+      cancel: () => {
+        kokoroHandle.cancel();
+        fallbackHandle?.cancel();
+      },
+    };
+  }
+  return speakWithSystemVoice(text, gender, { onDone, onError, volume });
+}
+
+// Platform TTS (expo-speech) — fallback engine and the web-preview path
+function speakWithSystemVoice(text, gender, { onDone, onError, volume = 1.0 } = {}) {
   let cancelled = false;
   const handle = {
     cancel: () => {
