@@ -3,12 +3,8 @@ import { Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import {
-  AudioModule,
-  RecordingPresets,
-  setAudioModeAsync,
-  useAudioRecorder,
-} from 'expo-audio';
+import { AudioModule, RecordingPresets, useAudioRecorder } from 'expo-audio';
+import { setPlaybackMode } from '../services/audioSession';
 import * as Haptics from 'expo-haptics';
 import { Card, PrimaryButton } from '../components/ui';
 import Waveform from '../components/Waveform';
@@ -71,7 +67,9 @@ export default function HardwareCheckScreen({ navigation, route }) {
           setMic('fail');
           return;
         }
-        await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+        // Stay in playback mode until recording actually starts — keeping
+        // allowsRecording on here is what made iOS route TTS to the earpiece
+        await setPlaybackMode();
         setMic('ok');
         try {
           const inputs = await probeRecorder.getAvailableInputs();

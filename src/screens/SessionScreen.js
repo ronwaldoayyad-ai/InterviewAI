@@ -8,6 +8,7 @@ import { Card, StepProgress } from '../components/ui';
 import SiriOrb from '../components/SiriOrb';
 import Waveform from '../components/Waveform';
 import { analyzeAnswer, nextQuestion, summarizeSession } from '../data/mockAI';
+import { setPlaybackMode, setRecordingMode } from '../services/audioSession';
 import { persistRecording } from '../services/storage';
 import { speakText } from '../services/voice';
 import { useApp } from '../state/AppContext';
@@ -26,16 +27,22 @@ function formatTime(sec) {
 export default function SessionScreen({ navigation, route }) {
   const { session } = route.params;
   const unlimited = session.questionLimit === 'unlimited';
-  const { addSession, voiceGender } = useApp();
+  const { addSession, voiceGender, appVolume, setAppVolume } = useApp();
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   // Spatial stereo cues: orb activation sweep + mic-on chime
   const activateSound = useAudioPlayer(require('../../assets/sounds/siri-activate.wav'));
   const micOnSound = useAudioPlayer(require('../../assets/sounds/mic-on.wav'));
   const playSound = (player) => {
     try {
+      player.volume = appVolume;
       player.seekTo(0);
       player.play();
     } catch {}
+  };
+
+  const changeVolume = (delta) => {
+    Haptics.selectionAsync();
+    setAppVolume((v) => Math.min(1, Math.max(0.1, Math.round((v + delta) * 10) / 10)));
   };
 
   const [questions, setQuestions] = useState(session.questions);
@@ -66,6 +73,7 @@ export default function SessionScreen({ navigation, route }) {
     };
     playSound(activateSound);
     speechRef.current = speakText(question.questionText, voiceGender, {
+      volume: appVolume,
       onDone: advance,
       onError: advance,
     });
@@ -110,6 +118,8 @@ export default function SessionScreen({ navigation, route }) {
     try {
       const perm = await AudioModule.getRecordingPermissionsAsync();
       if (perm.granted) {
+        // Record mode only while the mic is live (keeps iOS TTS on loudspeaker)
+        await setRecordingMode();
         if (session.micInputUid) {
           try {
             await recorder.setInput(session.micInputUid);
@@ -172,6 +182,7 @@ export default function SessionScreen({ navigation, route }) {
     } catch {
       // ignore — mock analysis continues without audio
     }
+    setPlaybackMode(); // back to loudspeaker for the next question's TTS
     if (uri) {
       uri = await persistRecording(uri, `${Date.now()}_q${index + 1}.m4a`);
     }
@@ -242,6 +253,40 @@ export default function SessionScreen({ navigation, route }) {
         </View>
         {!unlimited && <StepProgress step={index + 1} total={questions.length} />}
 
+        <View style={styles.volumeRow}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Decrease volume"
+            onPress={() => changeVolume(-0.1)}
+            style={styles.volBtn}
+            hitSlop={8}
+          >
+            <Ionicons name="remove" size={18} color={colors.primary} />
+          </Pressable>
+          <Ionicons
+            name={appVolume <= 0.3 ? 'volume-low' : appVolume <= 0.7 ? 'volume-medium' : 'volume-high'}
+            size={18}
+            color={colors.textSecondary}
+          />
+          <View
+            style={styles.volTrack}
+            accessibilityLabel={`Interviewer volume ${Math.round(appVolume * 100)} percent`}
+          >
+            {Array.from({ length: 10 }).map((_, i) => (
+              <View key={i} style={[styles.volSeg, i < Math.round(appVolume * 10) && styles.volSegOn]} />
+            ))}
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Increase volume"
+            onPress={() => changeVolume(0.1)}
+            style={styles.volBtn}
+            hitSlop={8}
+          >
+            <Ionicons name="add" size={18} color={colors.primary} />
+          </Pressable>
+        </View>
+
         <Card style={styles.questionCard}>
           <View style={styles.focusRow}>
             <View style={styles.focusPill}>
@@ -258,6 +303,7 @@ export default function SessionScreen({ navigation, route }) {
                 clearInterval(countdownRef.current);
                 setPhase('reading');
                 speechRef.current = speakText(question.questionText, voiceGender, {
+                  volume: appVolume,
                   onDone: beginCountdown,
                   onError: beginCountdown,
                 });
@@ -390,6 +436,24 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
   container: { flex: 1, padding: spacing.lg },
   topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  volumeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 2,
+  },
+  volBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: colors.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  volTrack: { flexDirection: 'row', gap: 3 },
+  volSeg: { width: 9, height: 6, borderRadius: 2, backgroundColor: colors.border },
+  volSegOn: { backgroundColor: colors.primary },
   questionCard: { marginTop: spacing.md, padding: spacing.lg },
   focusRow: {
     flexDirection: 'row',

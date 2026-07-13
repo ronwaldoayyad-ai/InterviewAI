@@ -26,7 +26,7 @@ const COUNT_OPTIONS = [
 ];
 
 export default function PracticeSetupScreen({ navigation }) {
-  const { voiceGender, setVoiceGender } = useApp();
+  const { voiceGender, setVoiceGender, appVolume } = useApp();
   const [sessionType, setSessionType] = useState('behavioral');
   const [questionCount, setQuestionCount] = useState(5);
   const [source, setSource] = useState('generic');
@@ -154,7 +154,7 @@ export default function PracticeSetupScreen({ navigation }) {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Preview interviewer voice"
-            onPress={() => previewVoice(voiceGender)}
+            onPress={() => previewVoice(voiceGender, appVolume)}
             style={styles.previewBtn}
           >
             <Ionicons name="volume-high-outline" size={20} color={colors.primary} />

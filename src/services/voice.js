@@ -2,6 +2,7 @@
 // the device offers, and speaks sentence-by-sentence with human-like pauses.
 import { Platform } from 'react-native';
 import * as Speech from 'expo-speech';
+import { setPlaybackMode } from './audioSession';
 
 // Known first names of platform voices (iOS/macOS + common web voices)
 const FEMALE_NAMES = [
@@ -90,7 +91,7 @@ const canSpeak = () =>
 
 // Speaks text sentence-by-sentence with short pauses between sentences, which
 // sounds far less robotic than one monotone run. Returns a cancellable handle.
-export function speakText(text, gender, { onDone, onError } = {}) {
+export function speakText(text, gender, { onDone, onError, volume = 1.0 } = {}) {
   let cancelled = false;
   const handle = {
     cancel: () => {
@@ -106,6 +107,8 @@ export function speakText(text, gender, { onDone, onError } = {}) {
       setTimeout(() => !cancelled && onDone && onDone(), 1000);
       return;
     }
+    // Route through the loudspeaker (fixes quiet earpiece playback on iOS)
+    await setPlaybackMode();
     const { voice, pitch, rate } = await resolveVoice(gender);
     if (cancelled) return;
     const sentences = splitSentences(text);
@@ -124,6 +127,7 @@ export function speakText(text, gender, { onDone, onError } = {}) {
           voice,
           pitch,
           rate,
+          volume, // applies on web; native follows system volume
           onDone: () => setTimeout(next, gap),
           onError: () => {
             onError && onError();
@@ -140,11 +144,10 @@ export function speakText(text, gender, { onDone, onError } = {}) {
   return handle;
 }
 
-export function previewVoice(gender) {
+export function previewVoice(gender, volume = 1.0) {
   return speakText(
-    gender === 'male'
-      ? "Hi, I'm your interviewer today. Take a breath, and let's begin when you're ready."
-      : "Hi, I'm your interviewer today. Take a breath, and let's begin when you're ready.",
-    gender
+    "Hi, I'm your interviewer today. Take a breath, and let's begin when you're ready.",
+    gender,
+    { volume }
   );
 }

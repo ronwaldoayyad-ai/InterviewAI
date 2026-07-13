@@ -9,6 +9,7 @@ export function AppProvider({ children }) {
   const [readinessScore, setReadinessScore] = useState(42);
   const [storageDirUri, setStorageDirUri] = useState(null); // Android SAF folder for exports
   const [voiceGender, setVoiceGender] = useState('female'); // interviewer TTS voice
+  const [appVolume, setAppVolume] = useState(1.0); // 0.1–1.0 in-app audio level
 
   const value = useMemo(
     () => ({
@@ -20,6 +21,8 @@ export function AppProvider({ children }) {
       setStorageDirUri,
       voiceGender,
       setVoiceGender,
+      appVolume,
+      setAppVolume,
       signIn: (profile) => setUser(profile),
       signOut: () => {
         setUser(null);
@@ -39,7 +42,7 @@ export function AppProvider({ children }) {
         setReadinessScore(42);
       },
     }),
-    [user, onboarded, sessions, readinessScore, storageDirUri, voiceGender]
+    [user, onboarded, sessions, readinessScore, storageDirUri, voiceGender, appVolume]
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
