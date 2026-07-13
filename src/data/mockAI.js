@@ -94,6 +94,113 @@ const INTRO_QUESTIONS = [
   'Before we dive in — walk me through your background and what you do today.',
 ];
 
+// ——— Context mining: ground questions in the actual resume/JD/page text ———
+
+const SKILL_DICT = [
+  'react native', 'react', 'javascript', 'typescript', 'node', 'python', 'java', 'swift',
+  'kotlin', 'c++', 'c#', 'go', 'rust', 'sql', 'postgres', 'mysql', 'mongodb', 'redis',
+  'aws', 'gcp', 'azure', 'docker', 'kubernetes', 'terraform', 'ci/cd', 'graphql', 'rest',
+  'microservices', 'machine learning', 'deep learning', 'data analysis', 'data engineering',
+  'etl', 'spark', 'airflow', 'tableau', 'power bi', 'excel', 'figma', 'sketch', 'prototyping',
+  'design systems', 'user research', 'usability testing', 'accessibility', 'wireframing',
+  'agile', 'scrum', 'kanban', 'jira', 'product strategy', 'roadmap', 'a/b testing',
+  'stakeholder management', 'okrs', 'analytics', 'seo', 'content marketing', 'crm',
+  'salesforce', 'negotiation', 'forecasting', 'leadership', 'mentoring', 'hiring',
+  'project management', 'budgeting', 'compliance', 'security', 'devops', 'qa', 'automation',
+];
+
+const TITLE_RE =
+  /(?:senior|staff|lead|principal|junior|associate)?\s*(?:software|frontend|front[- ]end|backend|back[- ]end|full[- ]stack|mobile|ios|android|data|ml|machine learning|devops|platform|cloud|security|product|project|program|ux|ui|design|marketing|sales|growth|qa|business)\s+(?:engineer|developer|designer|manager|scientist|analyst|researcher|architect|specialist|consultant|director)/i;
+
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+function extractSignals(text) {
+  const padded = ` ${(text || '').toLowerCase()} `;
+  const skills = [];
+  for (const skill of SKILL_DICT) {
+    if (skills.length >= 8) break;
+    if (padded.includes(` ${skill}`) && !skills.some((s) => s.includes(skill) || skill.includes(s))) {
+      skills.push(skill);
+    }
+  }
+  const title = (text.match(TITLE_RE) || [null])[0];
+  const years = (text.match(/(\d{1,2})\+?\s*years?/i) || [null, null])[1];
+  const metrics = [...(text.matchAll(/[^.!?\n]{0,80}\b\d+(?:\.\d+)?\s*%[^.!?\n]{0,60}/g) || [])]
+    .map((m) => m[0].trim())
+    .filter((s) => s.length > 20)
+    .slice(0, 2);
+  return { skills, title: title ? title.trim() : null, years, metrics };
+}
+
+// Build a question bank derived from what the context actually says.
+// This is the local stand-in for the backend LLM call in the TDD.
+function buildContextualBank(sessionType, text) {
+  if (!text || text.length < 80) return null;
+  const sig = extractSignals(text);
+  if (sig.skills.length < 2 && !sig.title && sig.metrics.length === 0) return null;
+
+  const qs = [];
+  const s = sig.skills;
+  if (sessionType === 'behavioral') {
+    s.slice(0, 3).forEach((sk) =>
+      qs.push({
+        text: `Tell me about the most challenging project where you used ${sk}. What was your specific contribution?`,
+        focus: cap(sk),
+      })
+    );
+    if (sig.title)
+      qs.push({
+        text: `In your ${sig.title} work, describe a time you disagreed with a stakeholder about priorities. How did you resolve it?`,
+        focus: 'STAR method',
+      });
+    sig.metrics.forEach((m) =>
+      qs.push({
+        text: `The context mentions “${m}” — walk me through how that result was achieved, step by step.`,
+        focus: 'Impact & metrics',
+      })
+    );
+    if (sig.years)
+      qs.push({
+        text: `Across your ${sig.years} years of experience, which failure taught you the most, and what changed afterwards?`,
+        focus: 'STAR method',
+      });
+    s.slice(3, 5).forEach((sk) =>
+      qs.push({
+        text: `Describe a time you had to get up to speed with ${sk} quickly to hit a deadline.`,
+        focus: 'Learning agility',
+      })
+    );
+  } else {
+    s.slice(0, 4).forEach((sk) =>
+      qs.push({
+        text: `What trade-offs do you weigh when using ${sk} in production, and when would you argue against it?`,
+        focus: cap(sk),
+      })
+    );
+    if (s.length >= 2)
+      qs.push({
+        text: `Sketch the architecture of a system that combines ${s[0]} and ${s[1]}. Where does it break at 10x scale?`,
+        focus: 'System design',
+      });
+    if (sig.title)
+      qs.push({
+        text: `This context calls for ${sig.title} skills — which part of that role's craft do you consider your strongest, and how would you prove it?`,
+        focus: 'Role fit',
+      });
+    sig.metrics.forEach((m) =>
+      qs.push({
+        text: `Regarding “${m}” — what was the technical approach behind that number?`,
+        focus: 'Technical depth',
+      })
+    );
+  }
+
+  // Top up with track staples so short contexts still fill a session
+  const staples = sessionType === 'behavioral' ? BEHAVIORAL_BANK : TECHNICAL_BANK[detectTrack(text)];
+  qs.push(...staples.slice(0, Math.max(0, 6 - qs.length)));
+  return qs;
+}
+
 function getBank(sessionType, contextText, customBank) {
   if (customBank && customBank.length) {
     return customBank.map((q) => ({
@@ -101,6 +208,8 @@ function getBank(sessionType, contextText, customBank) {
       focus: q.focus || (sessionType === 'behavioral' ? 'STAR method' : 'Your question set'),
     }));
   }
+  const contextual = buildContextualBank(sessionType, contextText);
+  if (contextual) return contextual;
   return sessionType === 'behavioral'
     ? BEHAVIORAL_BANK
     : TECHNICAL_BANK[detectTrack(contextText)];

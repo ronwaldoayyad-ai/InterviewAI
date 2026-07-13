@@ -5,15 +5,17 @@ import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import { Card, PrimaryButton, TextField } from '../components/ui';
 import { generateQuestions, makeIntroQuestion } from '../data/mockAI';
+import { extractFromResume, extractFromUrl } from '../services/contextExtractor';
 import { parseQuestions, readQuestionFile } from '../services/questions';
 import { previewVoice } from '../services/voice';
 import { useApp } from '../state/AppContext';
 import { colors, fonts, spacing, type } from '../theme';
 
 const SOURCES = [
-  { key: 'jd', icon: 'document-text-outline', title: 'Job description', sub: 'Paste the JD for targeted questions' },
-  { key: 'resume', icon: 'cloud-upload-outline', title: 'Resume upload', sub: 'PDF or DOCX' },
-  { key: 'linkedin', icon: 'logo-linkedin', title: 'LinkedIn URL', sub: 'We read your profile highlights' },
+  { key: 'jd', icon: 'document-text-outline', title: 'Job description', sub: 'Paste the JD — questions target its requirements' },
+  { key: 'resume', icon: 'cloud-upload-outline', title: 'Resume upload', sub: 'PDF, DOCX, or TXT — questions built from its content' },
+  { key: 'linkedin', icon: 'logo-linkedin', title: 'LinkedIn', sub: 'Profile URL, or paste your About/Experience text' },
+  { key: 'website', icon: 'globe-outline', title: 'Website URL', sub: 'Company page or job posting — we read the page' },
   { key: 'custom', icon: 'list-outline', title: 'My question set', sub: 'Upload .txt/.json or paste your own questions' },
   { key: 'generic', icon: 'shuffle-outline', title: 'General practice', sub: 'Curated questions for your goals' },
 ];
@@ -58,7 +60,11 @@ export default function PracticeSetupScreen({ navigation }) {
 
   const pickResume = async () => {
     const res = await DocumentPicker.getDocumentAsync({
-      type: ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+      type: [
+        'application/pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'text/plain',
+      ],
     });
     if (!res.canceled && res.assets?.length) {
       setResumeFile(res.assets[0]);
@@ -67,18 +73,27 @@ export default function PracticeSetupScreen({ navigation }) {
   };
 
   const start = async () => {
-    if (source === 'jd' && contextText.trim().length < 30)
+    const input = contextText.trim();
+    if (source === 'jd' && input.length < 30)
       return setError('Paste at least a few lines of the job description.');
-    if (source === 'linkedin' && !/linkedin\.com/.test(contextText))
-      return setError('Enter a valid LinkedIn profile URL.');
+    if (source === 'linkedin' && !/linkedin\.com/.test(input) && input.length < 80)
+      return setError('Enter your LinkedIn URL — or paste your About/Experience text.');
+    if (source === 'website' && !/\w+\.\w{2,}/.test(input))
+      return setError('Enter a valid website URL.');
     if (source === 'resume' && !resumeFile) return setError('Attach your resume first.');
     if (source === 'custom' && parsedCustom.length === 0)
       return setError('Upload or paste at least one question (one per line).');
     setError('');
     setLoading(true);
     try {
-      // AI question generation — must stay under the 5s latency budget (PRD §5)
-      const ctx = source === 'resume' ? resumeFile?.name || '' : contextText;
+      // Ground the questions in the real content of the chosen source
+      let ctx = input;
+      if (source === 'resume') {
+        ctx = await extractFromResume(resumeFile);
+      } else if (source === 'website' || (source === 'linkedin' && /linkedin\.com/.test(input))) {
+        ctx = await extractFromUrl(input);
+      }
+      // (linkedin with pasted profile text and jd use the text as-is)
       const customBank = source === 'custom' ? parsedCustom : undefined;
       const questions = await generateQuestions({
         sessionType,
@@ -101,6 +116,8 @@ export default function PracticeSetupScreen({ navigation }) {
           title: sessionType === 'behavioral' ? 'Behavioral interview' : 'Technical interview',
         },
       });
+    } catch (e) {
+      setError(e?.message || 'Something went wrong preparing your session.');
     } finally {
       setLoading(false);
     }
@@ -214,11 +231,22 @@ export default function PracticeSetupScreen({ navigation }) {
         )}
         {source === 'linkedin' && (
           <TextField
-            label="LinkedIn profile URL"
+            label="LinkedIn profile URL — or paste your profile text"
             value={contextText}
             onChangeText={setContextText}
-            placeholder="https://linkedin.com/in/you"
+            placeholder={'https://linkedin.com/in/you\n…or paste your About / Experience sections here'}
             autoCapitalize="none"
+            multiline
+          />
+        )}
+        {source === 'website' && (
+          <TextField
+            label="Website URL"
+            value={contextText}
+            onChangeText={setContextText}
+            placeholder="https://company.com/careers/role"
+            autoCapitalize="none"
+            keyboardType="url"
           />
         )}
         {source === 'resume' && (
@@ -230,7 +258,7 @@ export default function PracticeSetupScreen({ navigation }) {
                 color={colors.primary}
               />
               <Text style={[type.label, { marginTop: 8, color: colors.primary }]}>
-                {resumeFile ? resumeFile.name : 'Tap to attach PDF / DOCX'}
+                {resumeFile ? resumeFile.name : 'Tap to attach PDF / DOCX / TXT'}
               </Text>
             </Card>
           </Pressable>
