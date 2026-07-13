@@ -1,14 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import * as Speech from 'expo-speech';
 import { AudioModule, RecordingPresets, useAudioRecorder } from 'expo-audio';
 import { Card, StepProgress } from '../components/ui';
 import Waveform from '../components/Waveform';
 import { analyzeAnswer, nextQuestion, summarizeSession } from '../data/mockAI';
 import { persistRecording } from '../services/storage';
+import { speakText } from '../services/voice';
 import { useApp } from '../state/AppContext';
 import { colors, fonts, radii, shadow, spacing, type } from '../theme';
 
@@ -25,7 +25,7 @@ function formatTime(sec) {
 export default function SessionScreen({ navigation, route }) {
   const { session } = route.params;
   const unlimited = session.questionLimit === 'unlimited';
-  const { addSession } = useApp();
+  const { addSession, voiceGender } = useApp();
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
 
   const [questions, setQuestions] = useState(session.questions);
@@ -38,13 +38,14 @@ export default function SessionScreen({ navigation, route }) {
   const timerRef = useRef(null);
   const countdownRef = useRef(null);
   const finishingRef = useRef(false);
+  const speechRef = useRef(null);
   const phaseRef = useRef('reading');
   phaseRef.current = phase;
 
   const question = questions[index];
   const isLast = !unlimited && index === questions.length - 1;
 
-  // Question readback via TTS, then hand off to the countdown (enhancement #3)
+  // Question readback via natural TTS voice, then hand off to the countdown
   useEffect(() => {
     setPhase('reading');
     setMuted(false);
@@ -53,27 +54,16 @@ export default function SessionScreen({ navigation, route }) {
     const advance = () => {
       if (!cancelled && phaseRef.current === 'reading') beginCountdown();
     };
-    const canSpeak = Platform.OS !== 'web' || (typeof window !== 'undefined' && window.speechSynthesis);
-    if (canSpeak) {
-      try {
-        Speech.speak(question.questionText, {
-          rate: 0.95,
-          onDone: advance,
-          onError: advance,
-          onStopped: () => {},
-        });
-      } catch {
-        advance();
-      }
-    } else {
-      setTimeout(advance, 1200);
-    }
+    speechRef.current = speakText(question.questionText, voiceGender, {
+      onDone: advance,
+      onError: advance,
+    });
     // Safety net in case TTS callbacks never fire (some web/emulator engines)
-    const fallback = setTimeout(advance, 4000 + question.questionText.length * 80);
+    const fallback = setTimeout(advance, 6000 + question.questionText.length * 100);
     return () => {
       cancelled = true;
       clearTimeout(fallback);
-      Speech.stop();
+      speechRef.current?.cancel();
     };
   }, [index]);
 
@@ -81,13 +71,13 @@ export default function SessionScreen({ navigation, route }) {
     () => () => {
       clearInterval(timerRef.current);
       clearInterval(countdownRef.current);
-      Speech.stop();
+      speechRef.current?.cancel();
     },
     []
   );
 
   const beginCountdown = () => {
-    Speech.stop();
+    speechRef.current?.cancel();
     setPhase('countdown');
     setCountdown(COUNTDOWN_SECONDS);
     clearInterval(countdownRef.current);
@@ -207,7 +197,7 @@ export default function SessionScreen({ navigation, route }) {
       stopRecording(true);
       return;
     }
-    Speech.stop();
+    speechRef.current?.cancel();
     clearInterval(countdownRef.current);
     if (answersRef.current.length > 0) {
       finishingRef.current = true;
@@ -248,11 +238,10 @@ export default function SessionScreen({ navigation, route }) {
               hitSlop={8}
               onPress={() => {
                 if (phase === 'recording' || phase === 'processing') return;
-                Speech.stop();
+                speechRef.current?.cancel();
                 clearInterval(countdownRef.current);
                 setPhase('reading');
-                Speech.speak(question.questionText, {
-                  rate: 0.95,
+                speechRef.current = speakText(question.questionText, voiceGender, {
                   onDone: beginCountdown,
                   onError: beginCountdown,
                 });

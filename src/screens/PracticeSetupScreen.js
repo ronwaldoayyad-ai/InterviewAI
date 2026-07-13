@@ -5,6 +5,8 @@ import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import { Card, PrimaryButton, TextField } from '../components/ui';
 import { generateQuestions } from '../data/mockAI';
+import { previewVoice } from '../services/voice';
+import { useApp } from '../state/AppContext';
 import { colors, fonts, spacing, type } from '../theme';
 
 const SOURCES = [
@@ -22,6 +24,7 @@ const COUNT_OPTIONS = [
 ];
 
 export default function PracticeSetupScreen({ navigation }) {
+  const { voiceGender, setVoiceGender } = useApp();
   const [sessionType, setSessionType] = useState('behavioral');
   const [questionCount, setQuestionCount] = useState(5);
   const [source, setSource] = useState('generic');
@@ -96,6 +99,36 @@ export default function PracticeSetupScreen({ navigation }) {
               </Text>
             </Pressable>
           ))}
+        </View>
+
+        <Text style={[type.h3, styles.groupLabel]}>Interviewer voice</Text>
+        <View style={styles.voiceRow}>
+          <View style={[styles.segment, { flex: 1 }]}>
+            {[
+              { key: 'female', label: 'Female' },
+              { key: 'male', label: 'Male' },
+            ].map((v) => (
+              <Pressable
+                key={v.key}
+                accessibilityRole="button"
+                accessibilityState={{ selected: voiceGender === v.key }}
+                onPress={() => setVoiceGender(v.key)}
+                style={[styles.segmentItem, voiceGender === v.key && styles.segmentActive]}
+              >
+                <Text style={[styles.segmentText, voiceGender === v.key && styles.segmentTextActive]}>
+                  {v.label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Preview interviewer voice"
+            onPress={() => previewVoice(voiceGender)}
+            style={styles.previewBtn}
+          >
+            <Ionicons name="volume-high-outline" size={20} color={colors.primary} />
+          </Pressable>
         </View>
 
         <Text style={[type.h3, styles.groupLabel]}>Questions per session</Text>
@@ -211,6 +244,17 @@ const styles = StyleSheet.create({
   segmentActive: { backgroundColor: colors.surface },
   segmentText: { fontFamily: fonts.medium, fontSize: 15, color: colors.textSecondary },
   segmentTextActive: { color: colors.primary, fontFamily: fonts.semibold },
+  voiceRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  previewBtn: {
+    width: 52,
+    height: 52,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: colors.primarySoft,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   sourceCard: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm },
   sourceActive: { borderColor: colors.primary, borderWidth: 1.5 },
   sourceIcon: {
