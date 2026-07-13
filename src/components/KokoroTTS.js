@@ -10,7 +10,6 @@ const PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>
 <script type="module">
   const post = (m) => window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify(m));
   let tts = null;
-  let audio = null;
   let currentId = null;
 
   // Float32 PCM -> WAV, so playback works regardless of kokoro-js version APIs
@@ -30,25 +29,25 @@ const PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>
     return new Blob([buf], { type: 'audio/wav' });
   }
 
+  // Synthesis only — playback happens natively in RN (a hidden WebView's own
+  // audio is muted by the iOS silent switch and autoplay policies).
   window.stopSpeaking = () => {
     currentId = null;
-    if (audio) { try { audio.pause(); } catch (e) {} audio = null; }
   };
 
-  window.speakText = async ({ id, text, voice, volume }) => {
+  window.speakText = async ({ id, text, voice }) => {
     if (!tts) { post({ type: 'error', id, message: 'not ready' }); return; }
-    window.stopSpeaking();
     currentId = id;
     try {
       const out = await tts.generate(text, { voice });
       if (currentId !== id) return; // cancelled while synthesizing
       const blob = typeof out.toBlob === 'function' ? out.toBlob() : toWav(out.audio, out.sampling_rate);
-      const url = URL.createObjectURL(blob);
-      audio = new Audio(url);
-      audio.volume = Math.max(0, Math.min(1, volume ?? 1));
-      audio.onended = () => { URL.revokeObjectURL(url); if (currentId === id) post({ type: 'done', id }); };
-      audio.onerror = () => { URL.revokeObjectURL(url); if (currentId === id) post({ type: 'error', id, message: 'playback' }); };
-      await audio.play();
+      const fr = new FileReader();
+      fr.onload = () => {
+        if (currentId === id) post({ type: 'audio', id, b64: String(fr.result).split(',')[1] });
+      };
+      fr.onerror = () => { if (currentId === id) post({ type: 'error', id, message: 'encode failed' }); };
+      fr.readAsDataURL(blob);
     } catch (e) {
       if (currentId === id) post({ type: 'error', id, message: String(e && e.message || e) });
     }
