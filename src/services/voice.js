@@ -3,7 +3,12 @@
 import { Platform } from 'react-native';
 import * as Speech from 'expo-speech';
 import { setPlaybackMode } from './audioSession';
-import { kokoroIsReady, kokoroSpeak } from './kokoroEngine';
+import { kokoroIsReady, kokoroPrefetch, kokoroSpeak } from './kokoroEngine';
+
+// Pre-synthesize upcoming text so playback starts instantly when shown
+export function prefetchSpeech(text, gender) {
+  if (kokoroIsReady()) kokoroPrefetch(text, gender);
+}
 
 // Known first names of platform voices (iOS/macOS + common web voices)
 const FEMALE_NAMES = [

@@ -10,7 +10,7 @@ import Waveform from '../components/Waveform';
 import { analyzeAnswer, nextQuestion, summarizeSession } from '../data/mockAI';
 import { setPlaybackMode, setRecordingMode } from '../services/audioSession';
 import { persistRecording } from '../services/storage';
-import { speakText } from '../services/voice';
+import { prefetchSpeech, speakText } from '../services/voice';
 import { useApp } from '../state/AppContext';
 import { colors, fonts, radii, shadow, spacing, type } from '../theme';
 
@@ -76,8 +76,11 @@ export default function SessionScreen({ navigation, route }) {
       onDone: advance,
       onError: advance,
     });
-    // Safety net in case TTS callbacks never fire (some web/emulator engines)
-    const fallback = setTimeout(advance, 6000 + question.questionText.length * 100);
+    // Warm the next question's audio while this one is read and answered
+    if (questions[index + 1]) prefetchSpeech(questions[index + 1].questionText, voiceGender);
+    // Safety net in case TTS callbacks never fire (some web/emulator engines);
+    // generous budget so it never cuts off a slower neural readback
+    const fallback = setTimeout(advance, 12000 + question.questionText.length * 200);
     return () => {
       cancelled = true;
       clearTimeout(fallback);
@@ -201,14 +204,13 @@ export default function SessionScreen({ navigation, route }) {
         finalizeSession();
       } else {
         if (unlimited && index + 1 >= questions.length) {
-          setQuestions((qs) => [
-            ...qs,
-            nextQuestion({
-              sessionType: session.sessionType,
-              contextText: session.contextText,
-              customBank: session.customBank,
-            }),
-          ]);
+          const upcoming = nextQuestion({
+            sessionType: session.sessionType,
+            contextText: session.contextText,
+            customBank: session.customBank,
+          });
+          prefetchSpeech(upcoming.questionText, voiceGender);
+          setQuestions((qs) => [...qs, upcoming]);
         }
         setIndex((i) => i + 1);
       }

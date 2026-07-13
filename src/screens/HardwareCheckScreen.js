@@ -8,6 +8,8 @@ import { setPlaybackMode } from '../services/audioSession';
 import * as Haptics from 'expo-haptics';
 import { Card, PrimaryButton } from '../components/ui';
 import Waveform from '../components/Waveform';
+import { prefetchSpeech } from '../services/voice';
+import { useApp } from '../state/AppContext';
 import { colors, fonts, radii, spacing, type } from '../theme';
 
 function StatusPill({ status }) {
@@ -30,6 +32,7 @@ function StatusPill({ status }) {
 // with mic mute + input selection and camera on/off + facing (enhancement #2)
 export default function HardwareCheckScreen({ navigation, route }) {
   const { session } = route.params;
+  const { voiceGender } = useApp();
   const [network, setNetwork] = useState('checking');
   const [latencyMs, setLatencyMs] = useState(null);
   const [mic, setMic] = useState('checking');
@@ -43,6 +46,10 @@ export default function HardwareCheckScreen({ navigation, route }) {
   const probeRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
 
   useEffect(() => {
+    // Pre-synthesize the first question during the setup check so the
+    // readback starts the instant the interview begins
+    if (session.questions?.[0]) prefetchSpeech(session.questions[0].questionText, voiceGender);
+
     // Network: lightweight ping to measure latency ('no-cors' so the web preview works too)
     (async () => {
       try {
