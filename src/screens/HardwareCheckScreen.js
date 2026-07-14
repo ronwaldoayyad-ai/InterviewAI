@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -8,7 +8,7 @@ import { setPlaybackMode } from '../services/audioSession';
 import * as Haptics from 'expo-haptics';
 import { Card, PrimaryButton } from '../components/ui';
 import Waveform from '../components/Waveform';
-import { prefetchSpeech } from '../services/voice';
+import { getKokoroState, kokoroPrepare, subscribeKokoro } from '../services/kokoroEngine';
 import { useApp } from '../state/AppContext';
 import { colors, fonts, radii, spacing, type } from '../theme';
 
@@ -45,11 +45,41 @@ export default function HardwareCheckScreen({ navigation, route }) {
   const [camPermission, requestCamPermission] = useCameraPermissions();
   const probeRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
 
-  useEffect(() => {
-    // Pre-synthesize the whole question set during the setup check — the
-    // synth queue works through it while the user checks mic and camera
-    (session.questions || []).forEach((q) => prefetchSpeech(q.questionText, voiceGender));
+  // Neural-voice preparation gate: synthesize every question up front so the
+  // interviewer never falls back to the robotic system voice mid-session
+  const [kokoro, setKokoro] = useState(getKokoroState());
+  const [prep, setPrep] = useState(
+    Platform.OS === 'web'
+      ? { status: 'off', done: 0, total: 0, etaMs: null }
+      : { status: 'waiting', done: 0, total: 0, etaMs: null }
+  );
+  const prepStarted = useRef(false);
 
+  useEffect(() => subscribeKokoro(setKokoro), []);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    if (kokoro.status === 'failed') {
+      setPrep((p) => (p.status === 'skipped' ? p : { ...p, status: 'off' }));
+      return;
+    }
+    if (kokoro.status === 'ready' && !prepStarted.current) {
+      prepStarted.current = true;
+      setPrep((p) => (p.status === 'skipped' ? p : { status: 'preparing', done: 0, total: 0, etaMs: null }));
+      const handle = kokoroPrepare(
+        (session.questions || []).map((q) => q.questionText),
+        voiceGender,
+        ({ done, total, etaMs, complete }) => {
+          setPrep((p) =>
+            p.status === 'skipped' ? p : { status: complete ? 'ok' : 'preparing', done, total, etaMs }
+          );
+        }
+      );
+      return () => handle.cancel();
+    }
+  }, [kokoro.status]);
+
+  useEffect(() => {
     // Network: lightweight ping to measure latency ('no-cors' so the web preview works too)
     (async () => {
       try {
@@ -122,7 +152,17 @@ export default function HardwareCheckScreen({ navigation, route }) {
 
   // Camera turned off counts as ready — the interview is audio-first
   const cameraReady = camera === 'ok' || !cameraEnabled;
-  const allReady = network === 'ok' && mic === 'ok' && cameraReady;
+  // Voice gate: neural audio fully prepared, or explicitly unavailable/skipped
+  const voiceReady = ['ok', 'off', 'skipped'].includes(prep.status);
+  const allReady = network === 'ok' && mic === 'ok' && cameraReady && voiceReady;
+
+  const voicePill = prep.status === 'ok' ? 'ok' : voiceReady ? 'off' : 'checking';
+  const prepPct =
+    prep.status === 'preparing' && prep.total > 0 ? Math.round((prep.done / prep.total) * 100) : 0;
+  const etaLabel =
+    prep.etaMs == null
+      ? 'estimating time…'
+      : `~${Math.max(1, Math.ceil(prep.etaMs / 1000))}s left`;
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -257,8 +297,59 @@ export default function HardwareCheckScreen({ navigation, route }) {
           )}
         </Card>
 
+        <Card style={styles.checkCard}>
+          <View style={styles.checkHead}>
+            <View style={styles.rowCenter}>
+              <Ionicons name="sparkles" size={20} color={colors.primary} />
+              <Text style={[type.h3, { marginLeft: 10 }]}>Interviewer voice</Text>
+            </View>
+            <StatusPill status={voicePill} />
+          </View>
+
+          {prep.status === 'off' || prep.status === 'skipped' ? (
+            <Text style={type.bodySmall}>
+              {Platform.OS === 'web'
+                ? 'Web preview uses the standard system voice.'
+                : 'The standard system voice will be used for this session.'}
+            </Text>
+          ) : prep.status === 'ok' ? (
+            <Text style={type.bodySmall}>
+              Neural voice ready — all {prep.total || session.questions.length} question
+              {(prep.total || session.questions.length) === 1 ? '' : 's'} synthesized.
+            </Text>
+          ) : (
+            <>
+              <Text style={type.bodySmall}>
+                {kokoro.status === 'ready'
+                  ? `Synthesizing your questions with Kokoro-82M… ${prep.done}/${prep.total || '…'} · ${etaLabel}`
+                  : kokoro.progress >= 100
+                  ? 'Preparing the Kokoro-82M voice engine…'
+                  : `Downloading the Kokoro-82M voice model — ${kokoro.progress}%`}
+              </Text>
+              <View style={styles.prepTrack}>
+                <View
+                  style={[
+                    styles.prepFill,
+                    {
+                      width: `${kokoro.status === 'ready' ? prepPct : Math.min(kokoro.progress, 100)}%`,
+                    },
+                  ]}
+                />
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Skip voice preparation"
+                onPress={() => setPrep((p) => ({ ...p, status: 'skipped' }))}
+                style={styles.skipBtn}
+              >
+                <Text style={styles.skipText}>Skip — start with the standard voice</Text>
+              </Pressable>
+            </>
+          )}
+        </Card>
+
         <PrimaryButton
-          title={allReady ? 'Start interview' : 'Waiting for checks…'}
+          title={allReady ? 'Start interview' : voiceReady ? 'Waiting for checks…' : 'Preparing voice…'}
           icon="play"
           disabled={!allReady}
           onPress={() =>
@@ -308,4 +399,14 @@ const styles = StyleSheet.create({
   toggleBtnOff: { borderColor: colors.border, backgroundColor: colors.background },
   toggleText: { fontFamily: fonts.semibold, fontSize: 14, color: colors.primary },
   sourceRow: { flexDirection: 'row', alignItems: 'center', minHeight: 40 },
+  prepTrack: {
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.primaryLight,
+    overflow: 'hidden',
+    marginTop: spacing.sm,
+  },
+  prepFill: { height: 8, borderRadius: 4, backgroundColor: colors.primary },
+  skipBtn: { minHeight: 40, alignItems: 'center', justifyContent: 'center', marginTop: spacing.xs },
+  skipText: { fontFamily: fonts.semibold, fontSize: 13, color: colors.textSecondary },
 });

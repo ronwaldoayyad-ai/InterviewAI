@@ -176,15 +176,33 @@ export function handleKokoroMessage(raw) {
   }
 }
 
+// Rolling synthesis-speed stats power the "time left" estimate
+let synthMsTotal = 0;
+let synthCharsTotal = 0;
+
+function estimateSynthMs(chars) {
+  if (!synthCharsTotal || chars <= 0) return null;
+  return (synthMsTotal / synthCharsTotal) * chars;
+}
+
 function requestSynthesis(text, voice) {
   return new Promise((resolve, reject) => {
     if (!webview) return reject(new Error('kokoro not mounted'));
     const id = idCounter++;
+    const startedAt = Date.now();
     const timer = setTimeout(() => {
       synthWaiters.delete(id);
       reject(new Error('synthesis timed out'));
     }, SYNTH_TIMEOUT_MS);
-    synthWaiters.set(id, { resolve, reject, timer });
+    synthWaiters.set(id, {
+      resolve: (b64) => {
+        synthMsTotal += Date.now() - startedAt;
+        synthCharsTotal += text.length;
+        resolve(b64);
+      },
+      reject,
+      timer,
+    });
     try {
       webview.injectJavaScript(`window.speakText(${JSON.stringify({ id, text, voice })}); true;`);
     } catch (e) {
@@ -230,6 +248,63 @@ export function kokoroPrefetch(text, gender) {
   if (!kokoroIsReady() || !text) return;
   const voice = voiceFor(gender);
   splitForSynthesis(text).forEach((chunk) => getAudio(voice, chunk).catch(() => {}));
+}
+
+// Synthesize a set of texts with progress + ETA reporting — used by the
+// pre-session gate so the whole interview is neural-voice-ready up front.
+// onProgress({ done, total, etaMs, complete }); etaMs null until measured.
+export function kokoroPrepare(texts, gender, onProgress) {
+  const voice = voiceFor(gender);
+  const chunks = [];
+  const seen = new Set();
+  (texts || []).forEach((t) =>
+    splitForSynthesis(t).forEach((c) => {
+      const key = `${voice}|${c}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        chunks.push(c);
+      }
+    })
+  );
+  const total = chunks.length;
+  let cancelled = false;
+  let done = 0;
+  let remainingChars = 0;
+
+  const report = (complete) => {
+    if (!cancelled && onProgress) {
+      onProgress({ done, total, etaMs: complete ? 0 : estimateSynthMs(remainingChars), complete: !!complete });
+    }
+  };
+
+  (async () => {
+    const toDo = [];
+    for (const c of chunks) {
+      const key = `${voice}|${c}`;
+      if (memCache.has(key) || diskIndex.has(hashKey(key))) done++;
+      else {
+        toDo.push(c);
+        remainingChars += c.length;
+      }
+    }
+    if (toDo.length === 0) {
+      report(true);
+      return;
+    }
+    report(false);
+    const settle = (c) => {
+      done++;
+      remainingChars -= c.length;
+      report(done >= total);
+    };
+    await Promise.all(toDo.map((c) => getAudio(voice, c).then(() => settle(c), () => settle(c))));
+  })();
+
+  return {
+    cancel: () => {
+      cancelled = true;
+    },
+  };
 }
 
 // ——— native playback ———
