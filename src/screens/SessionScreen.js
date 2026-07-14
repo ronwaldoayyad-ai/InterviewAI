@@ -115,8 +115,9 @@ export default function SessionScreen({ navigation, route }) {
   };
 
   const startRecording = async () => {
+    // No cue here — a sound at mic-arm time bleeds into the recorded answer.
+    // Haptic feedback still signals the mic is live.
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    playSound(notificationSound);
     try {
       const perm = await AudioModule.getRecordingPermissionsAsync();
       if (perm.granted) {
@@ -220,13 +221,17 @@ export default function SessionScreen({ navigation, route }) {
   // "End interview" for unlimited sessions (and early exit for finite ones)
   const endInterview = () => {
     if (finishingRef.current) return;
+    // Silence any question playback immediately, in every phase
+    speechRef.current?.cancel();
+    try {
+      notificationSound.pause();
+    } catch {}
+    clearInterval(countdownRef.current);
     if (phase === 'recording') {
       finishingRef.current = true;
       stopRecording(true);
       return;
     }
-    speechRef.current?.cancel();
-    clearInterval(countdownRef.current);
     if (answersRef.current.length > 0) {
       finishingRef.current = true;
       finalizeSession();
